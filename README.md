@@ -1,166 +1,149 @@
-# MangaTL-Reader — project layout
+# MangaTL-Reader
 
-This used to be one 5,484-line `.py` file. It's now split into files you can
-actually navigate, edit, and get real syntax highlighting for. Nothing about
-*how the app behaves* changed — only where the code lives.
+**Read manga in a language it hasn't been translated into — yet.**
 
-```
-.
-├── server.py           Flask backend: routes, OCR pipeline, translation providers.
-├── static/
-│   ├── index.html        Page markup only.
-│   ├── style.css          All CSS (was the <style> block).
-│   └── js/                All JS (was the <script> block), split into modules:
-│       ├── state-and-constants.js   globals + language-name table
-│       ├── cache.js                 localStorage chapter cache + its UI
-│       ├── utils.js                 runConcurrent, toast/status, esc(), nav
-│       ├── mangadex-api.js          chapter/page fetch, adjacent-chapter lookup
-│       ├── local-source.js          local-folder/CBZ input — the non-MangaDex
-│       │                              counterpart to mangadex-api.js (see below)
-│       ├── ocr-client.js            calls into backend /ocr
-│       ├── mangadex-auth.js         OAuth2 login/refresh
-│       ├── translate-client.js      model/lang selection, translateBatch()
-│       ├── page-render.js           page skeleton/render/retry
-│       ├── pipeline.js              the main fetch→OCR→translate→render loop
-│       ├── reorder-ui.js            manual reading-order UI
-│       ├── box-overlay.js           shared drag-to-draw/render box engine
-│       │                              (used by both correction-ui.js and
-│       │                              erase-tool.js — see its header)
-│       ├── correction-ui.js         manual bubble-correction UI
-│       ├── zip-writer.js            dependency-free client-side ZIP builder
-│       └── export.js                "Export Typeset" — one page at a time, with retry/fix
-└── build.py             Reassembles everything into one distributable .py file.
-```
+MangaTL-Reader is a self-hosted tool that layers OCR + AI translation on top of MangaDex. Point it at a chapter that's already been fan-translated into Vietnamese, Korean, Indonesian, or any other language, and it re-translates that into whatever language you actually read — live, in your browser, with the original scanlation group credited on every page.
 
-## Local Folder / CBZ input
+It also works completely offline against your own local folder or `.cbz`/`.zip` files — no MangaDex chapter required.
 
-The home screen has a collapsible **"Local Folder / CBZ"** section (below
-the MangaDex chapter URL field) that reads pages straight from your
-computer — no MangaDex chapter needed, and it works fully offline apart
-from the OCR/translation AI calls themselves:
+---
 
-- **📁 Open Folder** — picks a folder of page images
-  (`<input webkitdirectory>`), natural-sorted by filename
-  (`page2.jpg` before `page10.jpg`).
-- **📦 Open CBZ / ZIP** — reads a `.cbz`/`.zip` archive client-side and
-  extracts its images in the same natural-sorted order. Junk entries
-  (`__MACOSX/`, `.DS_Store`, `ComicInfo.xml`) are skipped automatically.
+## Contents
 
-Pick a **Source Language** first (there's no chapter metadata to read it
-from, unlike a MangaDex chapter), then either button drops straight into
-the same reader/OCR/translate pipeline a MangaDex chapter uses.
+- [What it actually does](#what-it-actually-does)
+- [Features](#features)
+- [Getting started](#getting-started)
+- [Requirements](#requirements)
+- [Project layout](#project-layout-for-contributors)
+- [Known limitations](#known-limitations)
+- [A note on scope](#a-note-on-scope)
+- [License](#license)
 
-**Architecture.** `local-source.js` is a second "source adapter" alongside
-`mangadex-api.js` — it produces the exact same `{cdn, img}` page shape
-`fetchPageUrls()` does (`cdn` is a `local-blob:<id>` reference instead of
-an `https://` CDN url), so `pipeline.js` / `page-render.js` / `export.js` /
-`correction-ui.js` don't need to know or care which kind of chapter they're
-looking at. The one seam is `imageRefBody(cdnRef)`, which every OCR/crop/
-export fetch call resolves its request body through — it sends `{url:...}`
-for a real CDN url, or base64-encodes the local Blob into `{image_b64:...}`
-otherwise. On the backend, `_load_image_bytes()` in `server.py` is the
-mirror image: it accepts either shape and returns raw bytes either way, with
-`image_b64` skipping `_validate_image_url`/`requests.get` entirely (there's
-no URL to fetch, and therefore nothing to SSRF — the browser already has
-the bytes). The CBZ reader itself is a from-scratch STORE+DEFLATE ZIP
-parser (using `DecompressionStream`, no library), in the same
-zero-external-dependency spirit as `zip-writer.js`.
+---
 
-**Known limitation: no persistence across a reload.** A local page's image
-lives only in this tab's memory (a `Blob` + its `URL.createObjectURL()`),
-never written to disk or IndexedDB — closing or reloading the tab loses
-it, the same way closing a file-picker dialog would. Local chapters
-deliberately don't get written to the localStorage chapter cache for this
-reason (a "✓ cached" entry that can never re-render its images would be
-worse than no cache entry at all — see the `cacheable` flag on
-`_runChapterPipeline`/`startPipelineWithLocalSource` in `pipeline.js`).
-Everything else — OCR, translation, ✏ CORRECT, and ⬇ Export Typeset — works
-normally within the same session; it just doesn't survive a reload, same as
-the images themselves don't. Giving local chapters real persistence would
-mean storing the page bytes in IndexedDB instead of memory — a reasonable
-next step if this turns out to matter in practice, not implemented here.
+## What it actually does
 
-**Not yet wired up:** the standalone 🧹 Erase Tool screen still only loads
-pages by MangaDex URL — it wasn't touched, since it's a separate
-loading path from the main reader pipeline. Giving it a local-folder/CBZ
-input too would reuse the same `local-source.js` building blocks
-(`chapterFromFileList`/`chapterFromCbz`/`imageRefBody`), just wired into
-`erase-tool.js`'s own page-loading instead of `pipeline.js`'s.
+Give it either:
 
-## Export Typeset Chapter
+- a **MangaDex chapter URL** — any chapter that's already been translated into a non-English language, or
+- a **folder of page images, or a `.cbz`/`.zip` archive** on your own computer
 
-The reader has an "⬇ Export Typeset" button (top of the reading screen) that
-downloads the currently-open chapter as a zip of flattened PNGs — original
-text erased (via OpenCV inpainting), translated text drawn in its place.
-It reuses whatever OCR/translation the reader already did — no extra AI
-calls happen on export. If you've corrected any pages in the ✏ CORRECT UI,
-the corrected version is used for those pages automatically.
+and it hands you back the same chapter, readable in your language, in your browser. No manually retyping dialogue, no waiting on a group that's dropped a series, no needing to learn the bridge language first.
 
-**Pages are processed one at a time**, not as one big batch — a progress
-panel appears below the header showing every page's status (⏳ pending,
-✓ done, ✗ failed) as it goes, so a long chapter never means one long
-blocking request. You can keep scrolling/reading while it runs.
+---
 
-If a page fails or comes out wrong:
-- **↻ retry** re-runs just that page (picks up any correction-UI edit you've
-  since made, in case you fixed the translation and want to re-export it)
-- **✏ fix** scrolls to that page and opens the correction UI directly
+## Features
 
-**⬇ Download zip (N ready)** is available as soon as at least one page has
-finished — you don't have to wait for the whole chapter, and you can
-re-download after retrying more pages to get an updated zip.
+### Translation pipeline
+- OCR via **EasyOCR** (local, free) or **Gemini Vision** (higher quality, needs an API key), with automatic fallback from Vision → EasyOCR on quota or network errors — you'll see a toast if this happens, not a silent quality drop
+- Translation via **Gemini** or **DeepSeek** — bring your own API key; both offer a free or near-free tier
+- Spatial reading-order inference: understands left/right panel columns instead of flattening the whole page into one top-to-bottom blob
+- Automatic OCR cleanup before translation — rejoins hyphen-split words, merges a bubble that got split into 2–3 OCR fragments, filters out single-character screentone noise
+- Per-region **type classification** (speech / thought / sfx / narration / sign), so sound effects and caption boxes get handled differently from dialogue
+- Chapter-level local cache — reopening a chapter you've already translated is instant and doesn't re-spend API calls
 
-Backend: `/export-page` (single page, called once per page by the frontend
-loop) in `server.py`, built on a small typesetting module (`typeset_page()`)
-that does the inpaint-erase + font-fit-and-wrap text draw. Image bytes come
-from either a MangaDex CDN url (goes through the `_validate_image_url`
-allowlist) or a local-folder/CBZ page's `image_b64` — see `_load_image_bytes()`
-and the Local Folder / CBZ section above.
-`/export-chapter` (whole-chapter, all pages in one request) still exists
-server-side for anyone scripting against the API directly, but the UI no
-longer uses it — zipping now happens client-side (`static/js/zip-writer.js`,
-a small dependency-free ZIP writer) so partial progress can be downloaded
-without a server round-trip.
+### Local Folder / CBZ mode
+- Read straight from your own files — no MangaDex chapter needed, and it works fully offline apart from the OCR/translation calls themselves
+- Feeds into the exact same OCR → translate → correct → export pipeline as a MangaDex chapter
+- Natural filename sorting (`page2.jpg` before `page10.jpg`)
+- Automatically skips junk entries (`__MACOSX/`, `.DS_Store`, `ComicInfo.xml`)
+- **Known trade-off:** a local chapter's pages live only in that browser tab's memory — closing or reloading loses them, the same way closing a file picker would. Everything else (OCR, translation, corrections, export) works normally within the session.
 
-## Day to day: edit here
+### Manual correction & QA
+- **✏ Correct UI** — draw, split, merge, delete, and reorder bubble regions by hand when the automatic pass gets something wrong
+- Per-region retranslation, so you can fix one bubble without re-running the whole page
+- Corrections are saved locally and reapplied automatically the next time that chapter is opened
 
-Run the app normally:
+### Export
+- **⬇ Export Typeset Chapter** — downloads the chapter as a zip of flattened PNGs: original text erased, your translation drawn in its place
+- Reuses whatever OCR/translation already ran during reading — exporting doesn't trigger new AI calls
+- Pages are processed **one at a time** with a live progress panel (⏳ pending / ✓ done / ✗ failed) — a long chapter never means one long blocking request, and you can keep reading while it runs
+- Per-page **↻ retry** and **✏ fix** (jumps straight to the correction UI for that page)
+- Download-as-you-go: the zip is available as soon as one page finishes, and can be re-downloaded after fixing more
 
-```
+### Typesetting quality
+- OpenCV inpainting for textured or shaded bubbles; a cheap flat-fill for plain white/pale ones, auto-routed per region
+- Automatic black/white text color choice based on each erased region's own brightness — no black-on-black on dark caption boxes
+- Sound effects are left untouched by default — a plain text overlay usually looks worse than the original stylized SFX, so it's skipped the way a human typesetter would
+- Font auto-fit-and-wrap to the original bubble's dimensions
+
+### Standalone Erase Tool
+- A separate screen for just cleaning a page — erase the original text, draw nothing back — for anyone who wants to do their own typesetting from scratch
+- Currently MangaDex-chapter only (see [Known limitations](#known-limitations))
+
+### MangaDex integration
+- Optional OAuth login, attaching your account to API requests (useful for rate limits and anything gated to logged-in users)
+- Adjacent-chapter navigation (prev/next) without leaving the reader
+- Every translated chapter credits the original scanlation group with a link back to their MangaDex profile
+
+### Built with care for a tool that talks to the internet
+- Image-fetching routes are restricted to an allowlist of MangaDex CDN hosts, not "any `https://` URL" — closes off a server-side request forgery (SSRF) path
+- All externally-sourced text (e.g. scanlation group names from the API) is HTML-escaped before rendering
+- Binds to `127.0.0.1` by default and prints a loud warning if you ever change that, since the server has no built-in authentication of its own
+
+---
+
+## Getting started
+
+**Just want to read something?**
+Grab the latest `MangaTL-Reader.py` from this repo's **Releases** page and double-click it (or run `python MangaTL-Reader.py`). It auto-installs its own dependencies on first run — this takes a few minutes since EasyOCR downloads a language model — and opens your browser automatically once it's ready.
+
+**Want to edit, extend, or contribute?**
+Clone the repo instead. The source is split into readable files, not one multi-thousand-line blob:
+
+```bash
+git clone https://github.com/<your-username>/<your-repo>.git
+cd <your-repo>
 python server.py
 ```
 
-Edit `static/index.html`, `static/style.css`, or any file under `static/js/` —
-Flask serves them straight from disk, so a browser refresh picks up changes
-with no server restart needed (unlike editing Python route code, which still
-needs a restart).
+Edit anything under `static/` and refresh your browser — no restart needed. Editing `server.py` does need one.
 
-**Load order matters.** The files under `static/js/` share one global scope
-(plain `<script>` tags, not ES modules — same as the original), so a module
-can only use functions/variables defined in a module that loaded *before* it
-in `index.html`. If you add a new module, add its `<script src="...">` tag in
-`index.html` at the point in the list where its dependencies are already
-satisfied.
+---
 
-## Sharing one file: build it
+## Requirements
 
-If you want to hand someone a single `.py` file — no folder, no "keep these
-files together" — run:
+- Python 3.9+
+- An internet connection (for MangaDex chapters, Vision OCR, and translation)
+- A free **Gemini** API key ([aistudio.google.com](https://aistudio.google.com/app/apikey)) **or** a **DeepSeek** key (roughly $0.02–0.05 per chapter)
+
+---
+
+## Project layout (for contributors)
 
 ```
-python build.py
+.
+├── server.py           Flask backend — routes, OCR pipeline, translation providers
+├── static/
+│   ├── index.html         Page markup only
+│   ├── style.css          All styling
+│   └── js/                One module per concern: chapter pipeline, correction UI,
+│                           export, local-source handling, MangaDex auth, etc.
+└── build.py             Reassembles everything into one distributable .py file
 ```
 
-This reads `server.py` + everything under `static/` and writes
-`dist/MangaTL-Reader.py`: one file, frontend inlined, byte-for-byte the same
-behavior as this project (verified — the rebuilt JS is logic-identical to the
-split source with comments stripped).
+Load order matters in `static/js/` — these are plain `<script>` tags sharing one global scope, not ES modules, so a new module's `<script>` tag needs to go into `index.html` after whatever it depends on.
 
-**Don't hand-edit `dist/MangaTL-Reader.py`.** Treat it as a build artifact.
-If you find a bug in it, the fix belongs in `server.py` / `static/`, and then
-you re-run `build.py`. Otherwise your fix will quietly vanish the next time
-you rebuild.
+Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly what gets attached to a GitHub Release for the "just double-click it" crowd. Don't hand-edit the built file: fixes belong in `server.py`/`static/`, then re-run the build.
 
-```
-python build.py --output dist/MyCustomName.py   # optional: custom output path
-```
+---
+
+## Known limitations
+
+- Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
+- The standalone Erase Tool doesn't yet accept local-folder/CBZ input — MangaDex chapters only, for now.
+- No automated test suite yet.
+
+---
+
+## A note on scope
+
+This is a **personal reading tool**, not a publishing pipeline. It doesn't scan, host, or store any manga itself — it only processes chapters you already have access to, either through MangaDex's own public API or your own local files, using an AI API key you provide. It credits both MangaDex and the original scanlation group on every chapter, and it doesn't run ads or charge for anything the API provides.
+
+The chapter-export feature produces a finished, shareable file, which is a meaningfully different thing than reading a translated chapter in your own browser. What you do with an exported chapter afterward is your own call and your own responsibility — this project doesn't take a position on it either way.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
