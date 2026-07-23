@@ -52,14 +52,44 @@ function setReadOrder(mode) {
 }
 
 function _sortRegions(regions) {
-  if (_readOrder === 'auto-ltr') {
-    // Left-to-right, then top-to-bottom (manhwa)
-    return [...regions].sort((a, b) => a.cy - b.cy || a.cx - b.cx);
-  } else if (_readOrder === 'auto-rtl') {
-    // Right-to-left, then top-to-bottom (traditional manga)
-    return [...regions].sort((a, b) => a.cy - b.cy || b.cx - a.cx);
+  if (_readOrder === 'manual') {
+    // manual — keep raw OCR order as returned by server
+    return [...regions];
   }
-  // manual — keep raw OCR order as returned by server
-  return [...regions];
+
+  // Y-TOLERANCE BANDING, not a flat cy-primary sort.
+  //
+  // A flat sort by (cy, then cx) looks reasonable but is wrong for real
+  // manga/manhwa pages: cy is a bubble's vertical CENTER, and two bubbles
+  // in different side-by-side panels essentially never share an identical
+  // cy — a bubble near the bottom of a short left panel can easily have a
+  // smaller cy than a bubble near the top of a taller right panel next to
+  // it. Since cy was the PRIMARY sort key, that one comparison decided
+  // their order regardless of which panel either bubble was actually in —
+  // the cx tiebreaker (which is what LTR/RTL is supposed to control) was
+  // only ever reached on an exact cy tie, which real pages essentially
+  // never produce. Net effect: flipping the LTR/RTL toggle barely changed
+  // anything, because cx was rarely the deciding factor to begin with.
+  //
+  // Fix: treat any two bubbles whose cy values are within Y_BAND_PCT of
+  // each other as being on the same visual "row" and sort THOSE by cx
+  // (reading direction). Only fall back to pure cy ordering once bubbles
+  // are far enough apart vertically that they're clearly different rows.
+  // This isn't full geometric panel-detection (no panel-border data is
+  // available client-side) but band-tolerance handles the common case —
+  // side-by-side panels of roughly similar height — correctly, and
+  // degrades gracefully (falls back toward top-to-bottom) on layouts it
+  // doesn't fully understand, rather than confidently mis-clustering them.
+  const Y_BAND_PCT = 8; // cy values within 8% of page height count as "same row"
+
+  const dir = _readOrder === 'auto-ltr' ? 1 : -1; // +1 = left-to-right, -1 = right-to-left
+
+  return [...regions].sort((a, b) => {
+    const dy = a.cy - b.cy;
+    if (Math.abs(dy) < Y_BAND_PCT) {
+      return dir * (a.cx - b.cx);
+    }
+    return dy;
+  });
 }
 
