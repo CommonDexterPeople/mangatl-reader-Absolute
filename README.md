@@ -35,7 +35,12 @@ and it hands you back the same chapter, readable in your language, in your brows
 ## Features
 
 ### Translation pipeline
-- OCR via **EasyOCR** (local, free) or **Gemini Vision** (higher quality, needs an API key), with automatic fallback from Vision → EasyOCR on quota or network errors — you'll see a toast if this happens, not a silent quality drop
+- Dual OCR engines, routed automatically:
+  - **EasyOCR** (local, free) is the default and handles most languages well
+  - **Gemini Vision** (needs a Gemini key) kicks in for scripts EasyOCR historically struggles with — CJK, Arabic, Thai, Cyrillic, Vietnamese, heavy-diacritic Latin — controlled by a `smart` / `all` / `off` setting: `smart` (default) spends Vision quota only on those hard-mode languages, `all` runs it on every page for max accuracy at roughly double the API calls, `off` disables Vision entirely even with a key on file
+  - When Vision is used, EasyOCR still runs afterward purely to double-check bubble *positions* — a real detection model doesn't suffer the spatial drift an LLM's coordinate guess can, so its box gets adopted whenever the text matches, while Vision's own text stays authoritative (shown as `vision+easyocr` in the OCR engine badge)
+  - Automatic fallback to EasyOCR if Vision errors, times out, hits a quota limit, or its response fails to parse — surfaced as a toast, never a silent quality drop
+  - DeepSeek-only users always get plain EasyOCR — Vision OCR needs a Gemini key regardless of which provider is doing translation
 - Translation via **Gemini** or **DeepSeek** — bring your own API key; both offer a free or near-free tier
 - Spatial reading-order inference: understands left/right panel columns instead of flattening the whole page into one top-to-bottom blob
 - Automatic OCR cleanup before translation — rejoins hyphen-split words, merges a bubble that got split into 2–3 OCR fragments, filters out single-character screentone noise
@@ -51,7 +56,9 @@ and it hands you back the same chapter, readable in your language, in your brows
 
 ### Manual correction & QA
 - **✏ Correct UI** — draw, split, merge, delete, and reorder bubble regions by hand when the automatic pass gets something wrong
+- Two ways to draw a *new* region: a normal draw (re-OCRs the crop with EasyOCR) or a **✦ VISION draw** (sends the same crop to Gemini Vision instead) — for stylized/decorative fonts, vertical or mixed-script SFX, or anywhere the confidence badge was clearly wrong
 - Per-region retranslation, so you can fix one bubble without re-running the whole page
+- **✓ Check Flow** — a manually-triggered, whole-page continuity pass: one AI call re-reads every translated bubble on the page *together* (not one at a time) and flags translations that break the conversation — a pronoun that doesn't match who's speaking, a reply that doesn't follow from the line before it, tone that jars against its neighbors, terminology that's inconsistent with the rest of the page. Deliberately opt-in rather than automatic (it's a second full API call on top of the initial translation pass), and results show as a diff you approve line-by-line, never an auto-apply
 - Corrections are saved locally and reapplied automatically the next time that chapter is opened
 
 ### Export
