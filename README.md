@@ -4,7 +4,7 @@
 
 MangaTL-Reader is a self-hosted tool that layers OCR + AI translation on top of MangaDex. Point it at a chapter that's already been fan-translated into Vietnamese, Korean, Indonesian, or any other language, and it re-translates that into whatever language you actually read — live, in your browser, with the original scanlation group credited on every page.
 
-It also works completely offline against your own local folder or `.cbz`/`.zip` files — no MangaDex chapter required.
+It also works completely offline against your own local folder or `.cbz`/`.zip` files — no MangaDex chapter required — and can pull chapters from a self-hosted [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) instance as a third source.
 
 ---
 
@@ -54,6 +54,12 @@ and it hands you back the same chapter, readable in your language, in your brows
 - Automatically skips junk entries (`__MACOSX/`, `.DS_Store`, `ComicInfo.xml`)
 - **Known trade-off:** a local chapter's pages live only in that browser tab's memory — closing or reloading loses them, the same way closing a file picker would. Everything else (OCR, translation, corrections, export) works normally within the session.
 
+### Suwayomi-Server mode
+- Pull a chapter straight from your own self-hosted [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) instance, alongside MangaDex and local folder/CBZ as a third chapter source
+- Same OCR → translate → correct → export pipeline as any other source — nothing about reading, correcting, or exporting a chapter behaves differently once it's loaded
+- Chapters loaded this way are cached the same as MangaDex chapters (unlike local folder/CBZ, whose pages don't survive a reload — see above): a Suwayomi chapter's pages are real, re-fetchable URLs against your own server, so there's no downside to keeping the cache entry
+- Not yet wired into the standalone Erase Tool — MangaDex and local folder/CBZ only there for now
+
 ### Manual correction & QA
 - **✏ Correct UI** — draw, split, merge, delete, and reorder bubble regions by hand when the automatic pass gets something wrong
 - Two ways to draw a *new* region: a normal draw (re-OCRs the crop with EasyOCR) or a **✦ VISION draw** (sends the same crop to Gemini Vision instead) — for stylized/decorative fonts, vertical or mixed-script SFX, or anywhere the confidence badge was clearly wrong
@@ -76,7 +82,8 @@ and it hands you back the same chapter, readable in your language, in your brows
 
 ### Standalone Erase Tool
 - A separate screen for just cleaning a page — erase the original text, draw nothing back — for anyone who wants to do their own typesetting from scratch
-- Currently MangaDex-chapter only (see [Known limitations](#known-limitations))
+- Works from a MangaDex chapter URL or your own local folder/CBZ, same as the main reader
+- Suwayomi chapters aren't wired in here yet (see [Known limitations](#known-limitations))
 
 ### MangaDex integration
 - Optional OAuth login, attaching your account to API requests (useful for rate limits and anything gated to logged-in users)
@@ -138,7 +145,7 @@ Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly wh
 ## Known limitations
 
 - Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
-- The standalone Erase Tool doesn't yet accept local-folder/CBZ input — MangaDex chapters only, for now.
+- The standalone Erase Tool accepts MangaDex and local-folder/CBZ input, but not Suwayomi chapters yet.
 - No automated test suite yet.
 
 ---
@@ -153,4 +160,4 @@ The chapter-export feature produces a finished, shareable file, which is a meani
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+AGPL-3.0 — see [LICENSE](LICENSE). In short: use it, modify it, self-host it, no restrictions for personal use. If you distribute a modified version — including running it as a hosted web service others can use — you need to make that modified source available too.
