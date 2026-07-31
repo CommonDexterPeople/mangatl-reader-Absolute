@@ -1,0 +1,628 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>MangaTL Reader</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Share+Tech+Mono&family=Crimson+Pro:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ════════ HOME ════════ -->
+<div id="screen-home" class="screen active">
+  <div class="home-inner">
+
+    <div class="home-brand">
+      <div class="home-title">Manga<span>TL</span></div>
+      <div class="home-sub">MangaDex · EasyOCR+CLAHE · Multi-Provider AI</div>
+    </div>
+
+    <div class="home-section">
+      <div class="home-section-hdr"><span class="home-section-num">1</span> AI Setup</div>
+
+      <div class="form-group">
+        <label class="form-label" for="ai-model">AI Model</label>
+        <select id="ai-model" class="form-input" onchange="onModelChange()">
+          <optgroup label="✦ Free Tier (Google AI)">
+            <option value="gemini|gemini-3.5-flash">Gemini 3.5 Flash — Paid (best quality)</option>
+            <option value="gemini|gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite — Free tier (fastest, budget)</option>
+            <option value="gemini|gemini-2.5-flash">Gemini 2.5 Flash — Paid (retiring Oct 2026)</option>
+          </optgroup>
+          <optgroup label="Google AI (Paid)">
+            <option value="gemini|gemini-3.1-pro-preview">Gemini 3.1 Pro — Paid (flagship)</option>
+          </optgroup>
+          <optgroup label="DeepSeek (Cheap ~$0.02–0.05/chapter)">
+            <option value="deepseek|deepseek-v4-flash">DeepSeek V4 Flash</option>
+            <option value="deepseek|deepseek-v4-pro">DeepSeek V4 Pro (best quality)</option>
+          </optgroup>
+        </select>
+      </div>
+
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label" for="ai-key">API Key</label>
+        <input id="ai-key" class="form-input" type="password"
+               placeholder="AIza…" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+
+    <div class="home-section">
+      <div class="home-section-hdr"><span class="home-section-num">2</span> What to Read</div>
+
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label" for="chapter-url">MangaDex Chapter URL</label>
+        <input id="chapter-url" class="form-input" type="url" inputmode="url"
+               placeholder="https://mangadex.org/chapter/…"
+               autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+
+    <button class="btn-go" onclick="startPipeline()">TRANSLATE CHAPTER</button>
+
+    <div class="md-login-wrap" id="reading-prefs-wrap">
+      <button class="md-login-toggle" onclick="document.getElementById('reading-prefs-wrap').classList.toggle('open')">
+        <span>Reading Preferences <span style="font-size:0.7rem;opacity:0.6">(OCR quality, language, badge order)</span></span>
+        <span class="arrow">▶</span>
+      </button>
+      <div class="md-login-body">
+        <div class="form-group" id="vision-ocr-group">
+          <label class="form-label" for="vision-ocr-mode">Vision OCR
+            <span style="font-size:0.7rem;opacity:0.55;font-weight:400;margin-left:0.3rem">(uses Gemini quota per page)</span>
+          </label>
+          <select id="vision-ocr-mode" class="form-input"
+                  onchange="localStorage.setItem('mtl_vision_mode', this.value)">
+            <option value="smart">Smart — complex scripts only (saves quota)</option>
+            <option value="all">All languages — max quality</option>
+            <option value="off">Off — EasyOCR only, no quota used</option>
+          </select>
+        </div>
+
+        <div class="form-row-wrap">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="target-lang">Translate To</label>
+              <select id="target-lang" class="form-input" onchange="onTargetLangChange()">
+                <optgroup label="— Common —">
+                  <option value="English" selected>English</option>
+                  <option value="Malay">Bahasa Melayu — Malay</option>
+                  <option value="Indonesian">Bahasa Indonesia — Indonesian</option>
+                  <option value="Filipino">Tagalog — Filipino</option>
+                </optgroup>
+                <optgroup label="— East Asian —">
+                  <option value="Japanese">日本語 — Japanese</option>
+                  <option value="Chinese (Simplified)">中文（简体）— Chinese (Simplified)</option>
+                  <option value="Chinese (Traditional)">中文（繁體）— Chinese (Traditional)</option>
+                  <option value="Korean">한국어 — Korean</option>
+                </optgroup>
+                <optgroup label="— South / Southeast Asian —">
+                  <option value="Thai">ภาษาไทย — Thai</option>
+                  <option value="Vietnamese">Tiếng Việt — Vietnamese</option>
+                  <option value="Hindi">हिन्दी — Hindi</option>
+                  <option value="Bengali">বাংলা — Bengali</option>
+                  <option value="Tamil">தமிழ் — Tamil</option>
+                  <option value="Burmese">မြန်မာဘာသာ — Burmese</option>
+                  <option value="Khmer">ភាសាខ្មែរ — Khmer</option>
+                </optgroup>
+                <optgroup label="— European —">
+                  <option value="Spanish">Español — Spanish</option>
+                  <option value="French">Français — French</option>
+                  <option value="German">Deutsch — German</option>
+                  <option value="Portuguese">Português — Portuguese</option>
+                  <option value="Portuguese (Brazil)">Português (Brasil) — Portuguese (BR)</option>
+                  <option value="Italian">Italiano — Italian</option>
+                  <option value="Russian">Русский — Russian</option>
+                  <option value="Polish">Polski — Polish</option>
+                  <option value="Dutch">Nederlands — Dutch</option>
+                  <option value="Turkish">Türkçe — Turkish</option>
+                  <option value="Ukrainian">Українська — Ukrainian</option>
+                  <option value="Czech">Čeština — Czech</option>
+                  <option value="Romanian">Română — Romanian</option>
+                  <option value="Hungarian">Magyar — Hungarian</option>
+                  <option value="Swedish">Svenska — Swedish</option>
+                  <option value="Danish">Dansk — Danish</option>
+                  <option value="Norwegian">Norsk — Norwegian</option>
+                  <option value="Finnish">Suomi — Finnish</option>
+                  <option value="Greek">Ελληνικά — Greek</option>
+                </optgroup>
+                <optgroup label="— Middle East / Africa —">
+                  <option value="Arabic">العربية — Arabic</option>
+                  <option value="Persian">فارسی — Persian</option>
+                  <option value="Hebrew">עברית — Hebrew</option>
+                  <option value="Swahili">Kiswahili — Swahili</option>
+                </optgroup>
+                <option value="__custom__">✏ Custom language…</option>
+              </select>
+              <input id="target-lang-custom" class="form-input" type="text"
+                     placeholder="Type language name, e.g. Javanese"
+                     autocomplete="off" spellcheck="false"
+                     style="display:none;margin-top:0.45rem">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="quality">Image Quality</label>
+              <select id="quality" class="form-input">
+                <option value="data-saver" selected>Data Saver (faster)</option>
+                <option value="data">Full Quality</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="merge-scale">
+              Bubble Merge Sensitivity
+            </label>
+            <div class="merge-slider-row">
+              <input id="merge-scale" type="range"
+                     min="0.1" max="1.5" step="0.05" value="0.5"
+                     oninput="document.getElementById('merge-scale-val').textContent = parseFloat(this.value).toFixed(2)">
+              <span id="merge-scale-val" class="merge-slider-val">0.50</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:0">
+          <span class="read-order-label">Badge Reading Order</span>
+          <div class="read-order-row">
+            <button class="read-order-btn active" id="ro-auto-rtl" onclick="setReadOrder('auto-rtl')" title="Right&#8594;Left then Top&#8594;Bottom (standard manga)">
+              AUTO<br>&#8592; RTL
+            </button>
+            <button class="read-order-btn" id="ro-auto-ltr" onclick="setReadOrder('auto-ltr')" title="Left&#8594;Right then Top&#8594;Bottom (manhwa / webtoon)">
+              AUTO<br>LTR &#8594;
+            </button>
+            <button class="read-order-btn" id="ro-manual" onclick="setReadOrder('manual')" title="Keep OCR order &#8212; reorder per-page manually">
+              MANUAL<br>&#8597; DRAG
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="home-section-divider"><span>or import your own</span></div>
+
+    <div class="md-login-wrap" id="local-source-wrap">
+      <button class="md-login-toggle" onclick="toggleLocalSource()">
+        <span>Local Folder / CBZ <span style="font-size:0.7rem;opacity:0.6">(no MangaDex needed — works offline)</span></span>
+        <span class="arrow">▶</span>
+      </button>
+      <div class="md-login-body">
+        <div class="md-login-hint">
+          Read a folder of page images, or a <code>.cbz</code>/<code>.zip</code> archive,
+          straight from your computer — nothing is uploaded anywhere except the AI
+          calls for OCR/translation, same as any MangaDex chapter.
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="local-source-lang">Source Language</label>
+          <select id="local-source-lang" class="form-input">
+            <option value="ja" selected>日本語 — Japanese</option>
+            <option value="ko">한국어 — Korean</option>
+            <option value="zh">中文 — Chinese</option>
+            <option value="zh-hk">中文（繁體）— Chinese (Trad.)</option>
+            <option value="en">English</option>
+            <option value="vi">Tiếng Việt — Vietnamese</option>
+            <option value="th">ภาษาไทย — Thai</option>
+            <option value="id">Bahasa Indonesia — Indonesian</option>
+            <option value="ms">Bahasa Melayu — Malay</option>
+            <option value="es">Español — Spanish</option>
+            <option value="fr">Français — French</option>
+            <option value="de">Deutsch — German</option>
+            <option value="it">Italiano — Italian</option>
+            <option value="pt">Português — Portuguese</option>
+            <option value="pt-br">Português (Brasil)</option>
+            <option value="ru">Русский — Russian</option>
+            <option value="pl">Polski — Polish</option>
+            <option value="nl">Nederlands — Dutch</option>
+            <option value="tr">Türkçe — Turkish</option>
+            <option value="uk">Українська — Ukrainian</option>
+            <option value="cs">Čeština — Czech</option>
+            <option value="hu">Magyar — Hungarian</option>
+            <option value="ro">Română — Romanian</option>
+            <option value="sv">Svenska — Swedish</option>
+            <option value="da">Dansk — Danish</option>
+            <option value="fi">Suomi — Finnish</option>
+            <option value="no">Norsk — Norwegian</option>
+            <option value="hr">Hrvatski — Croatian</option>
+            <option value="sk">Slovenčina — Slovak</option>
+            <option value="bg">Български — Bulgarian</option>
+            <option value="lt">Lietuvių — Lithuanian</option>
+            <option value="lv">Latviešu — Latvian</option>
+            <option value="ar">العربية — Arabic</option>
+          </select>
+        </div>
+        <div class="form-row" style="gap:0.6rem">
+          <button class="btn-go" style="flex:1" onclick="triggerLocalFolderPicker()">📁 Open Folder</button>
+          <button class="btn-go" style="flex:1" onclick="triggerLocalCbzPicker()">📦 Open CBZ / ZIP</button>
+        </div>
+        <input type="file" id="local-folder-input" webkitdirectory directory multiple
+               accept="image/*" style="display:none" onchange="handleLocalFolderInput(event)">
+        <input type="file" id="local-cbz-input" accept=".cbz,.zip"
+               style="display:none" onchange="handleLocalCbzInput(event)">
+      </div>
+    </div>
+
+    <div class="md-login-wrap" id="suwayomi-source-wrap">
+      <button class="md-login-toggle" onclick="toggleSuwayomiSource()">
+        <span>Suwayomi (self-hosted) <span style="font-size:0.7rem;opacity:0.6">(hundreds of sources beyond MangaDex)</span></span>
+        <span class="arrow">▶</span>
+      </button>
+      <div class="md-login-body">
+        <div class="md-login-hint">
+          Reads a chapter from a <a href="https://github.com/Suwayomi/Suwayomi-Server" target="_blank" rel="noopener">Suwayomi-Server</a>
+          instance running on this machine (<code>http://127.0.0.1:4567</code> by default) — gives access to whatever
+          Tachiyomi/Mihon extensions you've installed there, beyond MangaDex. Find the <strong>Manga ID</strong> and
+          <strong>Chapter Index</strong> by browsing that chapter in Suwayomi's own WebUI first: the Manga ID is in
+          its URL, and the Chapter Index is the chapter's position in its list (1, 2, 3…) — not its title or chapter
+          number. The chapter also needs to have been opened at least once in Suwayomi's own reader already, so it's
+          actually fetched the page list.
+        </div>
+        <div class="form-row" style="gap:0.6rem">
+          <div class="form-group" style="flex:1">
+            <label class="form-label" for="suwayomi-manga-id">Manga ID</label>
+            <input id="suwayomi-manga-id" class="form-input" type="number" min="1"
+                   placeholder="229" inputmode="numeric">
+          </div>
+          <div class="form-group" style="flex:1">
+            <label class="form-label" for="suwayomi-chapter-index">Chapter Index</label>
+            <input id="suwayomi-chapter-index" class="form-input" type="number" min="1"
+                   placeholder="1" inputmode="numeric">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="suwayomi-source-lang">Source Language</label>
+          <select id="suwayomi-source-lang" class="form-input">
+            <option value="ja" selected>日本語 — Japanese</option>
+            <option value="ko">한국어 — Korean</option>
+            <option value="zh">中文 — Chinese</option>
+            <option value="zh-hk">中文（繁體）— Chinese (Trad.)</option>
+            <option value="en">English</option>
+            <option value="vi">Tiếng Việt — Vietnamese</option>
+            <option value="th">ภาษาไทย — Thai</option>
+            <option value="id">Bahasa Indonesia — Indonesian</option>
+            <option value="ms">Bahasa Melayu — Malay</option>
+            <option value="es">Español — Spanish</option>
+            <option value="fr">Français — French</option>
+            <option value="de">Deutsch — German</option>
+            <option value="it">Italiano — Italian</option>
+            <option value="pt">Português — Portuguese</option>
+            <option value="pt-br">Português (Brasil)</option>
+            <option value="ru">Русский — Russian</option>
+            <option value="pl">Polski — Polish</option>
+            <option value="nl">Nederlands — Dutch</option>
+            <option value="tr">Türkçe — Turkish</option>
+            <option value="uk">Українська — Ukrainian</option>
+            <option value="cs">Čeština — Czech</option>
+            <option value="hu">Magyar — Hungarian</option>
+            <option value="ro">Română — Romanian</option>
+            <option value="sv">Svenska — Swedish</option>
+            <option value="da">Dansk — Danish</option>
+            <option value="fi">Suomi — Finnish</option>
+            <option value="no">Norsk — Norwegian</option>
+            <option value="hr">Hrvatski — Croatian</option>
+            <option value="sk">Slovenčina — Slovak</option>
+            <option value="bg">Български — Bulgarian</option>
+            <option value="lt">Lietuvių — Lithuanian</option>
+            <option value="lv">Latviešu — Latvian</option>
+            <option value="ar">العربية — Arabic</option>
+          </select>
+        </div>
+        <button class="btn-go" onclick="loadFromSuwayomi()">Load Chapter</button>
+      </div>
+    </div>
+
+    <div class="md-login-wrap" id="md-login-wrap">
+      <button class="md-login-toggle" onclick="toggleMdLogin()">
+        <span>MangaDex Account <span style="font-size:0.7rem;opacity:0.6">(removes 10-chapter guest limit)</span></span>
+        <span style="display:flex;align-items:center;gap:0.6rem">
+          <span class="md-status">
+            <span class="md-status-dot" id="md-status-dot"></span>
+            <span id="md-status-text">Guest</span>
+          </span>
+          <span class="arrow">▶</span>
+        </span>
+      </button>
+      <div class="md-login-body">
+        <div class="md-login-hint">
+          Requires a <strong>personal API client</strong> on MangaDex.
+          Create one at <a href="https://mangadex.org/settings" target="_blank">mangadex.org → Settings → API Clients</a>,
+          then paste the Client ID and Secret below.
+        </div>
+        <div class="form-row" style="gap:0.6rem;margin-bottom:0.75rem">
+          <div class="form-group" style="flex:1;margin-bottom:0">
+            <label class="form-label" for="md-client-id">Client ID</label>
+            <input id="md-client-id" class="form-input" type="text"
+                   placeholder="…" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="form-group" style="flex:1;margin-bottom:0">
+            <label class="form-label" for="md-client-secret">Client Secret</label>
+            <input id="md-client-secret" class="form-input" type="password"
+                   placeholder="…" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <div class="form-row" style="gap:0.6rem;margin-bottom:0.85rem">
+          <div class="form-group" style="flex:1;margin-bottom:0">
+            <label class="form-label" for="md-username">Username</label>
+            <input id="md-username" class="form-input" type="text"
+                   placeholder="your MangaDex username" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="form-group" style="flex:1;margin-bottom:0">
+            <label class="form-label" for="md-password">Password</label>
+            <input id="md-password" class="form-input" type="password"
+                   placeholder="••••••••" autocomplete="off">
+          </div>
+        </div>
+        <button class="btn-md-login" id="md-login-btn" onclick="loginMangaDex()">Login</button>
+      </div>
+    </div>
+
+    <div class="home-section-divider"><span>your library</span></div>
+
+    <div class="home-cache-strip" id="home-cache-strip">
+      <div class="home-cache-info" id="home-cache-info">
+        <span class="cache-empty">No chapters cached yet</span>
+      </div>
+      <button class="btn-clear-cache-home" id="btn-clear-cache-home"
+              onclick="clearCacheFromHome()" disabled>🗑 CLEAR</button>
+    </div>
+
+    <div class="chlist-header" id="chlist-header" style="display:none">
+      <span>Cached chapters</span>
+      <button class="btn-download-all" id="btn-download-all"
+              onclick="downloadAllCachedChapters()" disabled
+              title="Download every cached chapter as one zip, to send or keep">
+        ⬇ Download all
+      </button>
+    </div>
+    <div class="home-chapter-list" id="home-chapter-list" style="display:none"></div>
+    <div class="export-panel" id="home-download-panel"></div>
+
+    <button class="btn-erase-tool" onclick="openEraseTool()"
+            title="Manually erase text from any page — no translation needed">
+      🧹 Erase Tool
+    </button>
+
+    <div class="home-hint" id="ai-hint">
+      Get a free key at <a id="ai-key-link" href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com</a>
+      &nbsp;·&nbsp; English chapters display as-is
+    </div>
+
+  </div>
+</div>
+
+<!-- ════════ ERASE TOOL ════════ -->
+<div id="screen-erase" class="screen">
+  <div class="erase-header">
+    <button class="btn-back" onclick="show('screen-home')">← BACK</button>
+    <div class="erase-header-title">🧹 Erase Tool</div>
+  </div>
+
+  <div class="erase-intro">
+    Manually erase text from any MangaDex page — or a local folder / .cbz —
+    draw a box over each bubble/sign, then either leave it blank to erase
+    only, or add a translation to typeset it back in. Boxes auto-fill from
+    this chapter's translations (including any ✏ CORRECT edits) when you draw
+    over a matching spot, or use ✦ seed from OCR to pull them all in at once.
+    Reusing existing translations needs no API key and no extra call — but
+    drawing a fresh box in ✦ VISION mode (for spots EasyOCR botched) reads it
+    with Gemini Vision, and ↺ TRANSLATE PENDING sends every still-untranslated
+    box to the AI together in one call once you're done drawing/fixing —
+    both need your Gemini key set on the home screen. Once a page is erased,
+    💾 Save it to the batch below and keep going through the rest of the
+    pages — ⬇ Download ZIP compiles everything you've saved into one file.
+  </div>
+
+  <div class="erase-load-row">
+    <input id="erase-url" class="form-input" type="url" inputmode="url"
+           placeholder="https://mangadex.org/chapter/…"
+           autocomplete="off" spellcheck="false">
+    <button class="btn-go btn-erase-load" onclick="loadEraseChapter()">LOAD</button>
+  </div>
+
+  <div class="home-section-divider"><span>or import your own</span></div>
+
+  <div class="md-login-wrap" id="erase-local-source-wrap">
+    <button class="md-login-toggle" onclick="toggleEraseLocalSource()">
+      <span>Local Folder / CBZ <span style="font-size:0.7rem;opacity:0.6">(no MangaDex needed — works offline)</span></span>
+      <span class="arrow">▶</span>
+    </button>
+    <div class="md-login-body">
+      <div class="md-login-hint">
+        Read a folder of page images, or a <code>.cbz</code>/<code>.zip</code> archive,
+        straight from your computer — nothing is uploaded anywhere except the
+        ✦ VISION draw / ↺ translate pending AI calls, same as any MangaDex page.
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="erase-local-source-lang">Source Language</label>
+        <select id="erase-local-source-lang" class="form-input">
+          <option value="ja" selected>日本語 — Japanese</option>
+          <option value="ko">한국어 — Korean</option>
+          <option value="zh">中文 — Chinese</option>
+          <option value="zh-hk">中文（繁體）— Chinese (Trad.)</option>
+          <option value="en">English</option>
+          <option value="vi">Tiếng Việt — Vietnamese</option>
+          <option value="th">ภาษาไทย — Thai</option>
+          <option value="id">Bahasa Indonesia — Indonesian</option>
+          <option value="ms">Bahasa Melayu — Malay</option>
+          <option value="es">Español — Spanish</option>
+          <option value="fr">Français — French</option>
+          <option value="de">Deutsch — German</option>
+          <option value="it">Italiano — Italian</option>
+          <option value="pt">Português — Portuguese</option>
+          <option value="pt-br">Português (Brasil)</option>
+          <option value="ru">Русский — Russian</option>
+          <option value="pl">Polski — Polish</option>
+          <option value="nl">Nederlands — Dutch</option>
+          <option value="tr">Türkçe — Turkish</option>
+          <option value="uk">Українська — Ukrainian</option>
+          <option value="cs">Čeština — Czech</option>
+          <option value="hu">Magyar — Hungarian</option>
+          <option value="ro">Română — Romanian</option>
+          <option value="sv">Svenska — Swedish</option>
+          <option value="da">Dansk — Danish</option>
+          <option value="fi">Suomi — Finnish</option>
+          <option value="no">Norsk — Norwegian</option>
+          <option value="hr">Hrvatski — Croatian</option>
+          <option value="sk">Slovenčina — Slovak</option>
+          <option value="bg">Български — Bulgarian</option>
+          <option value="lt">Lietuvių — Lithuanian</option>
+          <option value="lv">Latviešu — Latvian</option>
+          <option value="ar">العربية — Arabic</option>
+        </select>
+      </div>
+      <div class="form-row" style="gap:0.6rem">
+        <button class="btn-go" style="flex:1" onclick="triggerEraseLocalFolderPicker()">📁 Open Folder</button>
+        <button class="btn-go" style="flex:1" onclick="triggerEraseLocalCbzPicker()">📦 Open CBZ / ZIP</button>
+      </div>
+      <input type="file" id="erase-local-folder-input" webkitdirectory directory multiple
+             accept="image/*" style="display:none" onchange="handleEraseLocalFolderInput(event)">
+      <input type="file" id="erase-local-cbz-input" accept=".cbz,.zip"
+             style="display:none" onchange="handleEraseLocalCbzInput(event)">
+    </div>
+  </div>
+
+  <div class="erase-toolbar" id="erase-toolbar" style="display:none">
+    <button id="erase-prev-page" class="export-row-btn" onclick="eraseGoToPage(-1)">← page</button>
+    <span id="erase-page-label" class="erase-page-label">Page 1 / 1</span>
+    <button id="erase-next-page" class="export-row-btn" onclick="eraseGoToPage(1)">page →</button>
+    <span class="erase-toolbar-sep"></span>
+    <span id="erase-box-count" class="erase-box-count">0 boxes</span>
+    <button class="export-row-btn" onclick="eraseSeedFromOcr()" title="Reuse boxes + translations from OCR/correction data already found for this page, if any">✦ seed from OCR</button>
+    <button class="export-row-btn" onclick="eraseClearBoxes()">clear boxes</button>
+    <button id="btn-toggle-vision-draw" class="export-row-btn" onclick="eraseToggleVisionDraw()"
+            title="New boxes you draw get read with Gemini Vision instead of left blank/auto-matched — for spots EasyOCR misread or missed entirely. Requires a Gemini API key.">
+      ✦ VISION draw
+    </button>
+    <button id="btn-toggle-prepaint" class="export-row-btn" onclick="eraseTogglePrePaint()"
+            title="Paint white directly on the original page before erase runs — useful when a box is too small/misaligned, or a smudge sits outside any bubble">
+      🖌 paint before erase
+    </button>
+    <button id="btn-erase-translate-pending" class="export-row-btn" onclick="eraseTranslatePending()"
+            title="Translate every box that has no translation yet, in ONE batch AI call. Requires a Gemini or DeepSeek API key.">
+      ↺ translate pending (<span id="erase-pending-count">0</span>)
+    </button>
+    <select id="erase-mode" class="form-input erase-mode-select" title="Erase style">
+      <option value="auto" selected>Auto (fast fill on plain bubbles, inpaint elsewhere)</option>
+      <option value="inpaint">Inpaint (always blend texture)</option>
+      <option value="flatten">Flatten (always solid fill, cheaper)</option>
+    </select>
+    <select id="erase-legend-layout" class="form-input erase-mode-select" title="Where 'outside page' translations are printed">
+      <option value="below" selected>Legend: below image</option>
+      <option value="sidebar">Legend: sidebar</option>
+      <option value="both">Legend: both</option>
+    </select>
+    <button id="btn-do-erase" class="btn-erase-go" onclick="eraseRunErase()" disabled>🧹 Erase</button>
+  </div>
+
+  <div class="erase-toolbar erase-font-toolbar" id="erase-font-toolbar" style="display:none">
+    <span class="erase-page-label">Default text style:</span>
+    <select id="erase-default-font" class="form-input erase-mode-select" title="Font used for typeset translations (page default — each box can override this)" onchange="eraseSetDefaultFont(this.value)">
+      <option value="">System default</option>
+    </select>
+    <span class="erase-toolbar-sep"></span>
+    <label class="erase-page-label" for="erase-default-size">size</label>
+    <input id="erase-default-size" type="number" min="0" max="200" step="1"
+           class="form-input erase-size-input" placeholder="auto"
+           title="Explicit point size (page default — each box can override this). Leave blank/0 for auto-fit."
+           onchange="eraseSetDefaultFontSize(this.value)">
+  </div>
+
+  <div class="export-panel" id="erase-batch-panel"></div>
+
+  <div class="erase-layout">
+    <div class="erase-canvas-wrap" id="erase-canvas-wrap">
+      <div class="erase-empty-hint">Paste a MangaDex page or chapter URL above, then hit LOAD.</div>
+    </div>
+    <div class="erase-sidebar" id="erase-sidebar"></div>
+  </div>
+
+  <div class="erase-download-row" id="erase-download-row" style="display:none">
+    <button class="btn-erase-download" onclick="eraseSaveToBatch()" title="Save this page's result (including any brush touch-ups) into the batch below — nothing downloads yet">💾 Save to batch</button>
+    <button class="btn-erase-download" onclick="eraseDownloadPage()">⬇ Download this page only</button>
+  </div>
+</div>
+
+<!-- ════════ READER ════════ -->
+<div id="screen-reader" class="screen">
+
+  <div class="reader-header">
+    <div class="reader-header-top">
+      <button class="btn-back" onclick="goBack()">← BACK</button>
+      <div class="reader-titles">
+        <div class="reader-manga-title" id="manga-title">Loading…</div>
+        <div class="reader-ch-info" id="chapter-info">—</div>
+        <div class="reader-credit" id="chapter-credit"></div>
+      </div>
+    </div>
+    <div class="reader-header-bottom">
+      <div class="reader-status" id="reader-status">Fetching chapter…</div>
+      <button class="btn-export" id="btn-export-chapter"
+              onclick="exportTypesetChapter()" title="Download this chapter as typeset image files">
+        ⬇ Export Typeset
+      </button>
+      <div class="cache-pill" id="reader-cache-pill" title="Translation cache">
+        <span class="cache-pill-icon">💾</span>
+        <span class="cache-pill-label" id="reader-cache-label"><span>0</span> cached</span>
+        <button class="btn-cache-clear" id="reader-cache-clear-btn"
+                onclick="clearCacheFromReader()" title="Clear all cached chapters">✕ clear</button>
+      </div>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+  </div>
+
+  <div id="export-panel" class="export-panel"></div>
+
+  <div id="reader-body">
+    <div id="pages-container"></div>
+
+    <aside class="trans-rail" id="trans-rail">
+      <div class="trans-rail-hdr">
+        <span class="trans-rail-title">Translations — page <span class="rail-page-num" id="rail-page-num">–</span></span>
+        <button class="trans-rail-collapse" id="trans-rail-collapse-btn"
+                onclick="transRailCollapse()" title="Hide the translation panel">HIDE ▸</button>
+      </div>
+      <div class="trans-rail-body" id="trans-rail-body">
+        <div class="trans-rail-empty">Scroll to a translated page.</div>
+      </div>
+      <div class="trans-rail-kbd-hint">
+        <kbd>↓</kbd>/<kbd>S</kbd> next line · <kbd>↑</kbd>/<kbd>W</kbd> prev line
+      </div>
+    </aside>
+  </div>
+
+  <button class="trans-fab" id="trans-fab" hidden onclick="transRailExpand()" title="Show translations">
+    <span>💬 SHOW</span>
+    <span class="trans-fab-count" id="trans-fab-count">0</span>
+  </button>
+
+  <div id="nav-bar" class="nav-bar">
+    <button id="btn-prev" class="btn-nav" onclick="goToPrev()">← PREV CHAPTER</button>
+    <button id="btn-next" class="btn-nav" onclick="goToNext()">NEXT CHAPTER →</button>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script src="/static/js/state-and-constants.js"></script>
+<script src="/static/js/cache.js"></script>
+<script src="/static/js/utils.js"></script>
+<script src="/static/js/mangadex-api.js"></script>
+<script src="/static/js/suwayomi-api.js"></script>
+<script src="/static/js/local-source.js"></script>
+<script src="/static/js/ocr-client.js"></script>
+<script src="/static/js/mangadex-auth.js"></script>
+<script src="/static/js/translate-client.js"></script>
+<script src="/static/js/page-render.js"></script>
+<script src="/static/js/pipeline.js"></script>
+<script src="/static/js/reorder-ui.js"></script>
+<script src="/static/js/box-overlay.js"></script>
+<script src="/static/js/correction-ui.js"></script>
+<script src="/static/js/zip-writer.js"></script>
+<script src="/static/js/export.js"></script>
+<script src="/static/js/downloads.js"></script>
+<script src="/static/js/paint-brush.js"></script>
+<script src="/static/js/erase-tool.js"></script>
+<script src="/static/js/trans-rail.js"></script>
+</body>
+</html>
+
