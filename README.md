@@ -44,7 +44,6 @@ and it hands you back the same chapter, readable in your language, in your brows
 - Translation via **Gemini** or **DeepSeek** — bring your own API key; both offer a free or near-free tier
 - Spatial reading-order inference: understands left/right panel columns instead of flattening the whole page into one top-to-bottom blob
 - Automatic OCR cleanup before translation — rejoins hyphen-split words, merges a bubble that got split into 2–3 OCR fragments, filters out single-character screentone noise
-  - How aggressively fragments get merged back together is tunable via the **Bubble Merge Sensitivity** slider — raise it if dialogue keeps getting split into multiple bubbles it shouldn't be (common on fonts with unusually wide line spacing), lower it if separate nearby bubbles keep getting fused into one. It can't override the panel-border and bubble-shape detection though, so it won't fuse two bubbles that are genuinely in different panels no matter how high it's set — worst case at either extreme is a page that needs a manual split or merge in the ✏ Correct UI, not a broken chapter
 - Per-region **type classification** (speech / thought / sfx / narration / sign), so sound effects and caption boxes get handled differently from dialogue
 - Chapter-level local cache — reopening a chapter you've already translated is instant and doesn't re-spend API calls
 
@@ -59,11 +58,11 @@ and it hands you back the same chapter, readable in your language, in your brows
 - Pull a chapter straight from your own self-hosted [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) instance, alongside MangaDex and local folder/CBZ as a third chapter source
 - Same OCR → translate → correct → export pipeline as any other source — nothing about reading, correcting, or exporting a chapter behaves differently once it's loaded
 - Chapters loaded this way are cached the same as MangaDex chapters (unlike local folder/CBZ, whose pages don't survive a reload — see above): a Suwayomi chapter's pages are real, re-fetchable URLs against your own server, so there's no downside to keeping the cache entry
-- Not yet wired into the standalone Erase Tool — MangaDex and local folder/CBZ only there for now
+- Also available as a source in the standalone Erase Tool, alongside MangaDex and local folder/CBZ (see below)
 
 ### Manual correction & QA
 - **✏ Correct UI** — draw, split, merge, delete, and reorder bubble regions by hand when the automatic pass gets something wrong
-- Two ways to draw a *new* region: a normal draw (re-OCRs the crop with EasyOCR) or a **✦ VISION draw** (sends the same crop to Gemini Vision instead) — for stylized/decorative fonts, vertical or mixed-script SFX, or anywhere the on-page badge (the colored text overlay for that region, color-coded by its speech/thought/sfx/narration/sign type — see [Translation pipeline](#translation-pipeline)) was clearly showing the wrong text
+- Two ways to draw a *new* region: a normal draw (re-OCRs the crop with EasyOCR) or a **✦ VISION draw** (sends the same crop to Gemini Vision instead) — for stylized/decorative fonts, vertical or mixed-script SFX, or anywhere the confidence badge was clearly wrong
 - Per-region retranslation, so you can fix one bubble without re-running the whole page
 - **✓ Check Flow** — a manually-triggered, whole-page continuity pass: one AI call re-reads every translated bubble on the page *together* (not one at a time) and flags translations that break the conversation — a pronoun that doesn't match who's speaking, a reply that doesn't follow from the line before it, tone that jars against its neighbors, terminology that's inconsistent with the rest of the page. Deliberately opt-in rather than automatic (it's a second full API call on top of the initial translation pass), and results show as a diff you approve line-by-line, never an auto-apply
 - Corrections are saved locally and reapplied automatically the next time that chapter is opened
@@ -83,11 +82,10 @@ and it hands you back the same chapter, readable in your language, in your brows
 
 ### Standalone Erase Tool
 - A separate screen for just cleaning a page — erase the original text, draw nothing back — for anyone who wants to do their own typesetting from scratch
-- Works from a MangaDex chapter URL or your own local folder/CBZ, same as the main reader
-- Suwayomi chapters aren't wired in here yet (see [Known limitations](#known-limitations))
+- Works from a MangaDex chapter URL, your own local folder/CBZ, or a self-hosted Suwayomi-Server instance — the same three sources the main reader supports
 
 ### MangaDex integration
-- Optional OAuth login, attaching your account's auth token to MangaDex API requests — mainly useful for MangaDex's higher rate limits on logged-in requests
+- Optional OAuth login, attaching your account to API requests (useful for rate limits and anything gated to logged-in users)
 - Adjacent-chapter navigation (prev/next) without leaving the reader
 - Every translated chapter credits the original scanlation group with a link back to their MangaDex profile
 
@@ -122,8 +120,6 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 - An internet connection (for MangaDex chapters, Vision OCR, and translation)
 - A free **Gemini** API key ([aistudio.google.com](https://aistudio.google.com/app/apikey)) **or** a **DeepSeek** key (roughly $0.02–0.05 per chapter)
 
-Your API key (and MangaDex login, if you use it) is only ever sent from your browser straight to your own locally-running server, which forwards it to Gemini/DeepSeek/MangaDex on your behalf — never logged, and never stored anywhere except your own browser's local storage, so you don't have to re-paste it every session. The server prints a loud warning if you ever bind it to something other than `127.0.0.1`, since it has no built-in login of its own and anyone who can reach it on your network could reach those stored keys too — see [Built with care for a tool that talks to the internet](#built-with-care-for-a-tool-that-talks-to-the-internet).
-
 ---
 
 ## Project layout (for contributors)
@@ -148,8 +144,7 @@ Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly wh
 ## Known limitations
 
 - Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
-- The standalone Erase Tool accepts MangaDex and local-folder/CBZ input, but not Suwayomi chapters yet.
-- No automated test suite yet.
+- `test_ssrf_guard.py` and `test_deepseek_rescue.py` cover the SSRF allowlist and the DeepSeek JSON-rescue heuristic; there's no broader test suite beyond those two yet. Both run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS file and a `build.py` smoke test.
 
 ---
 
