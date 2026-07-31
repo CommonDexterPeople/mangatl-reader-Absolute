@@ -123,6 +123,34 @@ internal/local hosts. If your Suwayomi instance runs somewhere other than
 string, so e.g. `localhost:4567` and `127.0.0.1:4567` are NOT
 interchangeable; use the same one on both sides.
 
+## Suwayomi wired into the Erase Tool
+
+Follow-through on the "not wired into the Erase Tool yet" note above. No
+server-side change needed this time — `_validate_image_url()`'s
+`SUWAYOMI_HOST` carve-out already covers `/proxy` regardless of which screen
+is calling it, and `chapterFromSuwayomi()` already returned the same
+`{id, kind, title, sourceLang, pages: [{cdn, img}]}` shape
+`_loadEraseLocalChapter()` (erase-tool.js) was written against generically
+from the start. So this was purely additive on the frontend: a
+"Suwayomi (self-hosted)" collapsible section on the Erase Tool screen,
+mirroring the home screen's one field-for-field (`erase-suwayomi-manga-id`,
+`erase-suwayomi-chapter-index`, `erase-suwayomi-source-lang`, kept as
+separate ids/elements from the home screen's own — same reason
+`erase-local-source-lang` exists alongside the main reader's
+`local-source-lang` instead of sharing one), and
+`toggleEraseSuwayomiSource()` / `loadEraseFromSuwayomi()` in `erase-tool.js`,
+mirroring `pipeline.js`'s `toggleSuwayomiSource()` / `loadFromSuwayomi()`
+one-for-one except the last line: instead of
+`startPipelineWithSuwayomiSource(chapter)` it calls the already-generic
+`_loadEraseLocalChapter(chapter)` — the same function the local-folder/CBZ
+path already calls, unchanged.
+
+Confirmed `isLocalRef()`'s blob-cleanup check
+(`cdnRef.startsWith('local-blob:')`) correctly no-ops for Suwayomi pages,
+since their `cdn` is a real `http://127.0.0.1:4567/...` URL, not a
+`local-blob:` ref — so switching from a Suwayomi chapter to a local
+folder/CBZ (or back) can't leak or double-free anything either direction.
+
 ## Local Folder / CBZ input
 
 The home screen has a collapsible **"Local Folder / CBZ"** section (below
