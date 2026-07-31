@@ -44,6 +44,7 @@ and it hands you back the same chapter, readable in your language, in your brows
 - Translation via **Gemini** or **DeepSeek** — bring your own API key; both offer a free or near-free tier
 - Spatial reading-order inference: understands left/right panel columns instead of flattening the whole page into one top-to-bottom blob
 - Automatic OCR cleanup before translation — rejoins hyphen-split words, merges a bubble that got split into 2–3 OCR fragments, filters out single-character screentone noise
+  - How aggressively fragments get merged back together is tunable via the **Bubble Merge Sensitivity** slider — raise it if dialogue keeps getting split into multiple bubbles it shouldn't be (common on fonts with unusually wide line spacing), lower it if separate nearby bubbles keep getting fused into one. It can't override the panel-border and bubble-shape detection though, so it won't fuse two bubbles that are genuinely in different panels no matter how high it's set — worst case at either extreme is a page that needs a manual split or merge in the ✏ Correct UI, not a broken chapter
 - Per-region **type classification** (speech / thought / sfx / narration / sign), so sound effects and caption boxes get handled differently from dialogue
 - Chapter-level local cache — reopening a chapter you've already translated is instant and doesn't re-spend API calls
 
@@ -62,7 +63,7 @@ and it hands you back the same chapter, readable in your language, in your brows
 
 ### Manual correction & QA
 - **✏ Correct UI** — draw, split, merge, delete, and reorder bubble regions by hand when the automatic pass gets something wrong
-- Two ways to draw a *new* region: a normal draw (re-OCRs the crop with EasyOCR) or a **✦ VISION draw** (sends the same crop to Gemini Vision instead) — for stylized/decorative fonts, vertical or mixed-script SFX, or anywhere the confidence badge was clearly wrong
+- Two ways to draw a *new* region: a normal draw (re-OCRs the crop with EasyOCR) or a **✦ VISION draw** (sends the same crop to Gemini Vision instead) — for stylized/decorative fonts, vertical or mixed-script SFX, or anywhere the on-page badge (the colored text overlay for that region, color-coded by its speech/thought/sfx/narration/sign type — see [Translation pipeline](#translation-pipeline)) was clearly showing the wrong text
 - Per-region retranslation, so you can fix one bubble without re-running the whole page
 - **✓ Check Flow** — a manually-triggered, whole-page continuity pass: one AI call re-reads every translated bubble on the page *together* (not one at a time) and flags translations that break the conversation — a pronoun that doesn't match who's speaking, a reply that doesn't follow from the line before it, tone that jars against its neighbors, terminology that's inconsistent with the rest of the page. Deliberately opt-in rather than automatic (it's a second full API call on top of the initial translation pass), and results show as a diff you approve line-by-line, never an auto-apply
 - Corrections are saved locally and reapplied automatically the next time that chapter is opened
@@ -86,7 +87,7 @@ and it hands you back the same chapter, readable in your language, in your brows
 - Suwayomi chapters aren't wired in here yet (see [Known limitations](#known-limitations))
 
 ### MangaDex integration
-- Optional OAuth login, attaching your account to API requests (useful for rate limits and anything gated to logged-in users)
+- Optional OAuth login, attaching your account's auth token to MangaDex API requests — mainly useful for MangaDex's higher rate limits on logged-in requests
 - Adjacent-chapter navigation (prev/next) without leaving the reader
 - Every translated chapter credits the original scanlation group with a link back to their MangaDex profile
 
@@ -120,6 +121,8 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 - Python 3.9+
 - An internet connection (for MangaDex chapters, Vision OCR, and translation)
 - A free **Gemini** API key ([aistudio.google.com](https://aistudio.google.com/app/apikey)) **or** a **DeepSeek** key (roughly $0.02–0.05 per chapter)
+
+Your API key (and MangaDex login, if you use it) is only ever sent from your browser straight to your own locally-running server, which forwards it to Gemini/DeepSeek/MangaDex on your behalf — never logged, and never stored anywhere except your own browser's local storage, so you don't have to re-paste it every session. The server prints a loud warning if you ever bind it to something other than `127.0.0.1`, since it has no built-in login of its own and anyone who can reach it on your network could reach those stored keys too — see [Built with care for a tool that talks to the internet](#built-with-care-for-a-tool-that-talks-to-the-internet).
 
 ---
 
