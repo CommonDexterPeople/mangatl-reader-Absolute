@@ -332,11 +332,14 @@ _LANG_HINTS = {
     'th':    "Thai comics use politeness particles (ครับ for male speakers, ค่ะ/นะ for female). Reflect the speaker's politeness level and gender in the English tone where natural.",
     'ru':    "Russian manga often uses diminutives and expressive suffixes for names and nouns. Preserve endearment or mockery implied by diminutive forms rather than using the base name.",
     'fr':    "French comics distinguish 'tu' (informal) and 'vous' (formal/plural). Reflect the intimacy or formality of address in the English translation.",
-    'es':    "Spanish comics may be from Spain or Latin America with regional vocabulary differences. Translate to neutral international English unless a specific dialect is obvious.",
+    'es':    "Castilian Spanish (Spain). Distinguishes informal 'tú' from formal 'usted' — same shape as French tu/vous. Plural also splits by formality: informal 'vosotros' vs. formal 'ustedes' (Latin American Spanish does not make this plural distinction — see 'es-la'). Reflect the formality/intimacy of address in the English translation.",
+    'es-la': "Latin American Spanish. Distinguishes informal address from formal 'usted', but which informal pronoun appears varies by the writer's region: 'tú' (most of Latin America), or 'vos' (Argentina, Uruguay, Paraguay, and used informally in parts of Central America/Colombia) — 'vos' is not a typo or an unusual formal register, it's simply the informal 'you' in those dialects, with its own verb conjugation (e.g. 'vos tenés' = 'tú tienes'). The plural 'ustedes' covers both formal and informal in Latin American Spanish (unlike Spain's tú/vosotros vs. usted/ustedes split). Reflect the underlying formality level in English regardless of which informal pronoun is used.",
     'de':    "German comics use 'du' (informal) vs 'Sie' (formal). Preserve the formality level in English dialogue.",
     'pl':    "Polish uses grammatical gender and case extensively in dialogue — pay attention to whether the speaker refers to themselves as male or female when choosing English phrasing.",
     'tr':    "Turkish distinguishes formal 'siz' from informal 'sen', and verb suffixes encode the speaker's certainty/evidentiality (e.g. -mış for hearsay or surprise). Reflect the address formality in English, and render evidential surprise with natural English cues ('apparently', 'turns out') rather than dropping it.",
     'hu':    "Hungarian dialogue relies on verb conjugation and suffixes rather than pronouns for formality (e.g. 'maga/ön' formal vs 'te' informal address is often implied, not stated outright). Infer and preserve the formality level in English phrasing rather than defaulting to neutral 'you' throughout.",
+    'pt':    "European Portuguese: 'tu' is the default informal address (used with family, friends, peers); 'você' reads as formal-to-distant and can sound cold or corrective when used with someone the speaker is on familiar terms with — do not treat 'você' as neutral. 'O senhor'/'a senhora' is more deferential still. Reflect this formality gradient in the English translation rather than flattening everyone to 'you'.",
+    'pt-br': "Brazilian Portuguese: 'você' is the default, near-universal address across both informal and formal contexts — it does not itself signal formality the way 'você' does in European Portuguese. Genuine formality is instead carried by 'o senhor'/'a senhora', or regionally by 'tu' (esp. southern Brazil, informal). Don't read 'você' as implying distance or politeness; look to word choice, honorifics, and context for the actual register.",
 }
 
 
@@ -1386,6 +1389,7 @@ _VISION_LANG_NAMES = {
     'en':    'English',
     'fr':    'French',
     'es':    'Spanish',
+    'es-la': 'Spanish (Latin American)',
     'de':    'German',
     'pt':    'Portuguese',
     'pt-br': 'Portuguese (Brazilian)',
@@ -2994,13 +2998,51 @@ def _translate_deepseek(api_key: str, payload: dict, rescue_key: str = "translat
                 # A thinking model sometimes writes its final answer inside the
                 # reasoning chain when it runs out of output budget — rescue it here.
                 #
-                # Strategy A (primary): rfind the last "translations" key, walk back
-                # to the opening brace, then parse with json.loads.  This correctly
-                # handles nested objects like {"model":{"name":"x"},"translations":[...]}
-                # that the regex below would choke on due to its [^{}]*? guard.
+                # Strategy A (primary): find the JSON object that actually
+                # ENCLOSES the "translations" key, then parse it with json.loads.
+                #
+                # FIX (was: KNOWN_ISSUES_DRAFT.md "DeepSeek rescue Strategy A:
+                # doesn't handle a nested object before the key") — a single
+                # rc.rfind('{', 0, idx) finds the NEAREST '{' before the key,
+                # which is wrong whenever a nested object sits between the true
+                # enclosing brace and the key itself (e.g.
+                # {"model":{"name":"x"},"translations":[...]}  — the naive
+                # rfind grabs {"name":"x"}'s brace, not the outer one, and
+                # json.loads then chokes on the dangling trailing content).
+                # Reproduced directly against this exact shape before this fix
+                # landed; see KNOWN_ISSUES_DRAFT.md for the full trace.
+                #
+                # Correct approach: walk backward from the key counting brace
+                # depth (each '}' seen while scanning right-to-left means we've
+                # entered one more nested level we need to close before we're
+                # back at our own enclosing level; each '{' either closes one
+                # of those nested levels or — once depth is back to 0 — IS the
+                # enclosing brace we want). This finds the true enclosing brace
+                # regardless of how much nesting sits between it and the key.
+                #
+                # Verified against 10 cases before shipping (see
+                # test_deepseek_rescue.py): the original failing case, the
+                # plain/common no-nesting case (must still work — this is the
+                # hot path), doubly- and deeply-nested objects, nesting both
+                # before AND after the key, a duplicated key, unbalanced
+                # decoy braces earlier in the string, and three "must
+                # correctly return nothing" negative cases (no key present,
+                # key present but no valid JSON around it, empty input).
                 idx = rc.rfind(f'"{rescue_key}"')
                 if idx >= 0:
-                    brace = rc.rfind('{', 0, idx)
+                    brace = -1
+                    _depth = 0
+                    _i = idx - 1
+                    while _i >= 0:
+                        _c = rc[_i]
+                        if _c == '}':
+                            _depth += 1
+                        elif _c == '{':
+                            if _depth == 0:
+                                brace = _i
+                                break
+                            _depth -= 1
+                        _i -= 1
                     if brace >= 0:
                         try:
                             m_obj = _json.loads(rc[brace:])
@@ -3692,14 +3734,28 @@ def export_chapter():
 #   That's an acceptable risk model for HOST=127.0.0.1 (only the local user
 #   can reach it), but becomes a real credential/data exposure if HOST is
 #   ever changed to 0.0.0.0 or a LAN/public address without adding auth in
-#   front of it. Warn loudly rather than silently doing the unsafe thing.
+#   front of it.
+#
+# FIX #16 — a printed warning doesn't stop anything; it only helps someone
+#   who reads server output BEFORE the server is already reachable, which
+#   defeats the point for anyone who set HOST and walked away, or who's
+#   running this unattended (a scheduled task, a Docker container, etc).
+#   Change of behavior: exposing the server now REFUSES TO START unless the
+#   person opts in explicitly via the MTL_ALLOW_EXPOSED=1 environment
+#   variable — set once, on purpose, not something that happens as a side
+#   effect of editing HOST. This does not add real authentication (still
+#   none) — it just makes "I am knowingly accepting this risk" a deliberate
+#   act instead of an easy-to-miss side effect.
 _LOCALHOST_ADDRS = {"127.0.0.1", "localhost", "::1"}
 
-def _warn_if_exposed(host: str) -> None:
+def _check_exposure_or_exit(host: str) -> None:
     if host in _LOCALHOST_ADDRS:
         return
+
+    allowed = os.environ.get("MTL_ALLOW_EXPOSED", "").strip() == "1"
+
     print()
-    print("  ⚠️   WARNING: HOST is not localhost (currently: " + host + ")")
+    print("  ⚠️   HOST is not localhost (currently: " + host + ")")
     print("  ⚠️   This server has no authentication. Anyone who can reach it")
     print("  ⚠️   on your network can read stored API keys, log in as you on")
     print("  ⚠️   MangaDex (client_secret is sent to /auth/login unauthenticated),")
@@ -3707,6 +3763,19 @@ def _warn_if_exposed(host: str) -> None:
     print("  ⚠️   /export-chapter.")
     print("  ⚠️   Only do this on a trusted network, and ideally put it behind")
     print("  ⚠️   your own auth (reverse proxy, VPN, etc.) first.")
+
+    if not allowed:
+        print()
+        print("  ✗   Refusing to start on a non-localhost address without an")
+        print("  ✗   explicit opt-in. If you understand the risk above and want")
+        print("  ✗   to proceed anyway, set MTL_ALLOW_EXPOSED=1 and run again:")
+        print()
+        print("        (macOS/Linux)  MTL_ALLOW_EXPOSED=1 python server.py")
+        print("        (Windows PS)   $env:MTL_ALLOW_EXPOSED=1; python server.py")
+        print()
+        sys.exit(1)
+
+    print("  ⚠️   MTL_ALLOW_EXPOSED=1 is set — starting anyway.")
     print()
 
 
@@ -3717,7 +3786,7 @@ if __name__ == "__main__":
         print(f"     Stop the other process, or change PORT at the top of this script.\n")
         sys.exit(1)
 
-    _warn_if_exposed(HOST)
+    _check_exposure_or_exit(HOST)
 
     addr = f"http://{HOST}:{PORT}"
     print(f"\n  MangaTL  →  {addr}")
