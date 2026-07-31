@@ -478,6 +478,74 @@
     </div>
   </div>
 
+  <div class="md-login-wrap" id="erase-suwayomi-source-wrap">
+    <button class="md-login-toggle" onclick="toggleEraseSuwayomiSource()">
+      <span>Suwayomi (self-hosted) <span style="font-size:0.7rem;opacity:0.6">(hundreds of sources beyond MangaDex)</span></span>
+      <span class="arrow">▶</span>
+    </button>
+    <div class="md-login-body">
+      <div class="md-login-hint">
+        Reads a chapter from a <a href="https://github.com/Suwayomi/Suwayomi-Server" target="_blank" rel="noopener">Suwayomi-Server</a>
+        instance running on this machine (<code>http://127.0.0.1:4567</code> by default), same as the main reader's
+        Suwayomi source on the home screen. Find the <strong>Manga ID</strong> and <strong>Chapter Index</strong> by
+        browsing that chapter in Suwayomi's own WebUI first: the Manga ID is in its URL, and the Chapter Index is the
+        chapter's position in its list (1, 2, 3…) — not its title or chapter number. The chapter also needs to have
+        been opened at least once in Suwayomi's own reader already, so it's actually fetched the page list.
+      </div>
+      <div class="form-row" style="gap:0.6rem">
+        <div class="form-group" style="flex:1">
+          <label class="form-label" for="erase-suwayomi-manga-id">Manga ID</label>
+          <input id="erase-suwayomi-manga-id" class="form-input" type="number" min="1"
+                 placeholder="229" inputmode="numeric">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label class="form-label" for="erase-suwayomi-chapter-index">Chapter Index</label>
+          <input id="erase-suwayomi-chapter-index" class="form-input" type="number" min="1"
+                 placeholder="1" inputmode="numeric">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="erase-suwayomi-source-lang">Source Language</label>
+        <select id="erase-suwayomi-source-lang" class="form-input">
+          <option value="ja" selected>日本語 — Japanese</option>
+          <option value="ko">한국어 — Korean</option>
+          <option value="zh">中文 — Chinese</option>
+          <option value="zh-hk">中文（繁體）— Chinese (Trad.)</option>
+          <option value="en">English</option>
+          <option value="vi">Tiếng Việt — Vietnamese</option>
+          <option value="th">ภาษาไทย — Thai</option>
+          <option value="id">Bahasa Indonesia — Indonesian</option>
+          <option value="ms">Bahasa Melayu — Malay</option>
+          <option value="es">Español — Spanish</option>
+          <option value="fr">Français — French</option>
+          <option value="de">Deutsch — German</option>
+          <option value="it">Italiano — Italian</option>
+          <option value="pt">Português — Portuguese</option>
+          <option value="pt-br">Português (Brasil)</option>
+          <option value="ru">Русский — Russian</option>
+          <option value="pl">Polski — Polish</option>
+          <option value="nl">Nederlands — Dutch</option>
+          <option value="tr">Türkçe — Turkish</option>
+          <option value="uk">Українська — Ukrainian</option>
+          <option value="cs">Čeština — Czech</option>
+          <option value="hu">Magyar — Hungarian</option>
+          <option value="ro">Română — Romanian</option>
+          <option value="sv">Svenska — Swedish</option>
+          <option value="da">Dansk — Danish</option>
+          <option value="fi">Suomi — Finnish</option>
+          <option value="no">Norsk — Norwegian</option>
+          <option value="hr">Hrvatski — Croatian</option>
+          <option value="sk">Slovenčina — Slovak</option>
+          <option value="bg">Български — Bulgarian</option>
+          <option value="lt">Lietuvių — Lithuanian</option>
+          <option value="lv">Latviešu — Latvian</option>
+          <option value="ar">العربية — Arabic</option>
+        </select>
+      </div>
+      <button class="btn-go" onclick="loadEraseFromSuwayomi()">Load Chapter</button>
+    </div>
+  </div>
+
   <div class="erase-toolbar" id="erase-toolbar" style="display:none">
     <button id="erase-prev-page" class="export-row-btn" onclick="eraseGoToPage(-1)">← page</button>
     <span id="erase-page-label" class="erase-page-label">Page 1 / 1</span>
