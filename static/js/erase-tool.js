@@ -233,6 +233,43 @@ function _loadEraseLocalChapter(chapter) {
   toast(`Loaded ${_erasePageList.length} page${_erasePageList.length !== 1 ? 's' : ''} from ${chapter.kind === 'cbz' ? '.cbz' : 'folder'}.`);
 }
 
+// ── Suwayomi (self-hosted) input ─────────────────────────────────
+// Third chapter source for the Erase Tool, alongside MangaDex (loadEraseChapter)
+// and Local Folder/CBZ (above). chapterFromSuwayomi() (suwayomi-api.js) already
+// returns the same {id, kind, title, sourceLang, pages: [{cdn, img}]} shape
+// chapterFromFileList()/chapterFromCbz() do, and _loadEraseLocalChapter() was
+// written generically against that shape from the start — so, same as
+// pipeline.js's startPipelineWithSuwayomiSource() needed no changes to
+// page-render.js/export.js to support a third source, this needs no changes
+// to _loadEraseLocalChapter() either. Mirrors pipeline.js's
+// toggleSuwayomiSource()/loadFromSuwayomi() one-for-one; kept as separate
+// erase-* element ids/functions since the Erase Tool and main reader are two
+// independent screens with their own home-screen-style collapsible sections,
+// same reason erase-local-source-lang exists alongside the main reader's own
+// local-source-lang instead of sharing one.
+function toggleEraseSuwayomiSource() {
+  document.getElementById('erase-suwayomi-source-wrap')?.classList.toggle('open');
+}
+
+async function loadEraseFromSuwayomi() {
+  const mangaId      = document.getElementById('erase-suwayomi-manga-id').value.trim();
+  const chapterIndex = document.getElementById('erase-suwayomi-chapter-index').value.trim();
+  const sourceLang   = document.getElementById('erase-suwayomi-source-lang').value;
+
+  if (!mangaId || !chapterIndex) {
+    toast('Enter both a Manga ID and a Chapter Index.');
+    return;
+  }
+
+  toast('Fetching from Suwayomi…', 3000);
+  try {
+    const chapter = await chapterFromSuwayomi(mangaId, chapterIndex, sourceLang);
+    _loadEraseLocalChapter(chapter);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
 function _populateFontDropdown() {
   const sel = document.getElementById('erase-default-font');
   if (!sel) return;
