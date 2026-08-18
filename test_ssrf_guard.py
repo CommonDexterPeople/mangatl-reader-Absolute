@@ -11,8 +11,11 @@ WHAT THIS ACTUALLY TESTS
 
 HOW TO RUN
   python test_ssrf_guard.py
-  (needs server.py in the same folder; does NOT start the Flask server or
-  touch the network — pure function-level check, runs in under a second)
+  (needs server.py in the same folder and its module-scope deps installed —
+  flask, requests, opencv-python-headless, numpy, pillow. Does NOT need
+  easyocr/rapidocr/torch: those load lazily and are never touched here.
+  Does NOT start the Flask server or touch the network — pure
+  function-level check, runs in under a second.)
 
 WHAT "PASS" MEANS
   Every row marked PASS means the function returned what a correct SSRF
@@ -24,32 +27,28 @@ WHAT "PASS" MEANS
 import importlib.util
 import sys
 
-# Import _is_allowed_image_host directly from server.py without running the
-# rest of the file (which would trigger the dependency auto-installer and
-# try to import EasyOCR/cv2/etc). We do this by loading just enough of the
-# module namespace to get the one function + the constant it depends on.
-spec = importlib.util.spec_from_file_location("server", "server.py")
-# We can't fully exec server.py (heavy deps), so instead read the two pieces
-# we need as source and exec them in an isolated namespace. This is more
-# fragile than a real import but avoids needing EasyOCR/torch installed just
-# to run a hostname-string test.
-import re
-
-with open("server.py", "r", encoding="utf-8") as f:
-    src = f.read()
-
-# Pull out _ALLOWED_IMAGE_HOSTS and _is_allowed_image_host by name.
-ns = {}
-m1 = re.search(r"^_ALLOWED_IMAGE_HOSTS = \{.*?\}\n", src, re.S | re.M)
-m2 = re.search(r"^def _is_allowed_image_host.*?\n\n\n", src, re.S | re.M)
-if not m1 or not m2:
-    print("Could not locate the guard in server.py — has it been renamed/moved?")
-    print("Open server.py and search for '_is_allowed_image_host' by hand instead.")
+# Import the real function from the real module. server.py's dependency
+# auto-installer is guarded behind `if __name__ == "__main__"`, so importing
+# it here is a plain import with no pip side effect and no EasyOCR/torch load
+# (those are lazy — see _get_reader()/_get_lama_engine()).
+#
+# This used to regex _ALLOWED_IMAGE_HOSTS and _is_allowed_image_host out of
+# server.py's source text and exec() them, purely to dodge that installer.
+# The cost was silent: reformatting the guard, or adding a blank line inside
+# it, made the regex miss and the test assert against a stale/partial copy of
+# code that no longer resembled what shipped. A real import can't drift.
+_spec = importlib.util.spec_from_file_location("mangatl_server", "server.py")
+_server = importlib.util.module_from_spec(_spec)
+sys.modules["mangatl_server"] = _server
+try:
+    _spec.loader.exec_module(_server)
+except ImportError as e:
+    print(f"Could not import server.py: {e}")
+    print("Install its module-scope deps first:")
+    print("  pip install flask requests opencv-python-headless numpy pillow")
     sys.exit(1)
 
-exec(m1.group(0), ns)
-exec(m2.group(0), ns)
-_is_allowed_image_host = ns["_is_allowed_image_host"]
+_is_allowed_image_host = _server._is_allowed_image_host
 
 # ── Adversarial test cases ────────────────────────────────────────────────
 # (hostname, should_be_allowed, why this case matters)

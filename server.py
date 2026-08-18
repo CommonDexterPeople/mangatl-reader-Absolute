@@ -88,7 +88,23 @@ def _bootstrap():
         print("     pip install " + " ".join(missing))
         sys.exit(1)
 
-_bootstrap()
+# Only auto-install when this file is RUN, not when it's imported. Importing
+# server.py must never shell out to pip as a side effect — that side effect is
+# exactly what forced test_ssrf_guard.py and test_deepseek_rescue.py to regex
+# their functions-under-test out of this file's source text and exec() them
+# rather than just importing them.
+#
+# Running the script directly is unaffected: __name__ is "__main__" here, so
+# the bootstrap still completes before the imports below — the only ordering
+# constraint that ever mattered.
+#
+# An importer must therefore already have the module-scope dependencies
+# (flask, requests, cv2, numpy, PIL — imported just below). easyocr, rapidocr
+# and torch are deliberately NOT among them: those load lazily inside
+# _get_reader() / _get_rapidocr_engine() / _get_lama_engine(), so a test that
+# only touches geometry or parsing never pays their install/import cost.
+if __name__ == "__main__":
+    _bootstrap()
 
 # ─── All other imports (safe after bootstrap) ─────────────────────────────────
 
@@ -4827,6 +4843,92 @@ def _inject_lang_hint(payload: dict, source_lang: str) -> None:
             break
 
 
+def _rescue_json_from_reasoning(rc: str, rescue_key: str = "translations") -> str:
+    """Recover a JSON object containing `rescue_key` from a DeepSeek thinking
+    model's `reasoning_content`.
+
+    A thinking model sometimes writes its final answer inside the reasoning
+    chain when it runs out of output budget, leaving `content` empty. This
+    digs that answer back out. Returns the rescued JSON substring, or "" if
+    nothing was rescuable.
+
+    Lives here as a module-level function rather than inline in
+    _translate_deepseek() so it can be imported and tested directly —
+    test_deepseek_rescue.py used to regex this logic out of server.py's
+    source text and exec() it, because reaching it any other way meant
+    calling _translate_deepseek() and hitting the network.
+    """
+    import json as _json
+    import re as _re
+
+    content = ""
+
+    # Strategy A (primary): find the JSON object that actually
+    # ENCLOSES the "translations" key, then parse it with json.loads.
+    #
+    # FIX (was: KNOWN_ISSUES_DRAFT.md "DeepSeek rescue Strategy A:
+    # doesn't handle a nested object before the key") — a single
+    # rc.rfind('{', 0, idx) finds the NEAREST '{' before the key,
+    # which is wrong whenever a nested object sits between the true
+    # enclosing brace and the key itself (e.g.
+    # {"model":{"name":"x"},"translations":[...]}  — the naive
+    # rfind grabs {"name":"x"}'s brace, not the outer one, and
+    # json.loads then chokes on the dangling trailing content).
+    # Reproduced directly against this exact shape before this fix
+    # landed; see KNOWN_ISSUES_DRAFT.md for the full trace.
+    #
+    # Correct approach: walk backward from the key counting brace
+    # depth (each '}' seen while scanning right-to-left means we've
+    # entered one more nested level we need to close before we're
+    # back at our own enclosing level; each '{' either closes one
+    # of those nested levels or — once depth is back to 0 — IS the
+    # enclosing brace we want). This finds the true enclosing brace
+    # regardless of how much nesting sits between it and the key.
+    #
+    # Verified against 10 cases before shipping (see
+    # test_deepseek_rescue.py): the original failing case, the
+    # plain/common no-nesting case (must still work — this is the
+    # hot path), doubly- and deeply-nested objects, nesting both
+    # before AND after the key, a duplicated key, unbalanced
+    # decoy braces earlier in the string, and three "must
+    # correctly return nothing" negative cases (no key present,
+    # key present but no valid JSON around it, empty input).
+    idx = rc.rfind(f'"{rescue_key}"')
+    if idx >= 0:
+        brace = -1
+        _depth = 0
+        _i = idx - 1
+        while _i >= 0:
+            _c = rc[_i]
+            if _c == '}':
+                _depth += 1
+            elif _c == '{':
+                if _depth == 0:
+                    brace = _i
+                    break
+                _depth -= 1
+            _i -= 1
+        if brace >= 0:
+            try:
+                m_obj = _json.loads(rc[brace:])
+                if isinstance(m_obj, dict) and rescue_key in m_obj:
+                    content = rc[brace:]
+            except Exception:
+                pass
+    # Strategy B (fallback): regex — catches malformed JSON that
+    # json.loads rejects but still contains a parseable rescue_key array.
+    # Only runs when Strategy A found nothing.
+    if not content.strip():
+        m = _re.search(
+            r'\{[^{}]*?"' + _re.escape(rescue_key) + r'"\s*:\s*\[[\s\S]*?\]\s*\}',
+            rc
+        )
+        if m:
+            content = m.group(0)
+
+    return content
+
+
 def _translate_deepseek(api_key: str, payload: dict, rescue_key: str = "translations"):
     """
     Forward an OpenAI-style payload to DeepSeek and return a normalised response.
@@ -4865,7 +4967,6 @@ def _translate_deepseek(api_key: str, payload: dict, rescue_key: str = "translat
 
     # ── Normalise to guaranteed-non-empty content ─────────────────────────────
     try:
-        import re as _re
         data    = r.json()
         choices = data.get("choices") or []
         msg     = choices[0].get("message", {}) if choices else {}
@@ -4879,71 +4980,7 @@ def _translate_deepseek(api_key: str, payload: dict, rescue_key: str = "translat
         if not content.strip():
             rc = (msg.get("reasoning_content") or "").strip()
             if rc:
-                # A thinking model sometimes writes its final answer inside the
-                # reasoning chain when it runs out of output budget — rescue it here.
-                #
-                # Strategy A (primary): find the JSON object that actually
-                # ENCLOSES the "translations" key, then parse it with json.loads.
-                #
-                # FIX (was: KNOWN_ISSUES_DRAFT.md "DeepSeek rescue Strategy A:
-                # doesn't handle a nested object before the key") — a single
-                # rc.rfind('{', 0, idx) finds the NEAREST '{' before the key,
-                # which is wrong whenever a nested object sits between the true
-                # enclosing brace and the key itself (e.g.
-                # {"model":{"name":"x"},"translations":[...]}  — the naive
-                # rfind grabs {"name":"x"}'s brace, not the outer one, and
-                # json.loads then chokes on the dangling trailing content).
-                # Reproduced directly against this exact shape before this fix
-                # landed; see KNOWN_ISSUES_DRAFT.md for the full trace.
-                #
-                # Correct approach: walk backward from the key counting brace
-                # depth (each '}' seen while scanning right-to-left means we've
-                # entered one more nested level we need to close before we're
-                # back at our own enclosing level; each '{' either closes one
-                # of those nested levels or — once depth is back to 0 — IS the
-                # enclosing brace we want). This finds the true enclosing brace
-                # regardless of how much nesting sits between it and the key.
-                #
-                # Verified against 10 cases before shipping (see
-                # test_deepseek_rescue.py): the original failing case, the
-                # plain/common no-nesting case (must still work — this is the
-                # hot path), doubly- and deeply-nested objects, nesting both
-                # before AND after the key, a duplicated key, unbalanced
-                # decoy braces earlier in the string, and three "must
-                # correctly return nothing" negative cases (no key present,
-                # key present but no valid JSON around it, empty input).
-                idx = rc.rfind(f'"{rescue_key}"')
-                if idx >= 0:
-                    brace = -1
-                    _depth = 0
-                    _i = idx - 1
-                    while _i >= 0:
-                        _c = rc[_i]
-                        if _c == '}':
-                            _depth += 1
-                        elif _c == '{':
-                            if _depth == 0:
-                                brace = _i
-                                break
-                            _depth -= 1
-                        _i -= 1
-                    if brace >= 0:
-                        try:
-                            m_obj = _json.loads(rc[brace:])
-                            if isinstance(m_obj, dict) and rescue_key in m_obj:
-                                content = rc[brace:]
-                        except Exception:
-                            pass
-                # Strategy B (fallback): regex — catches malformed JSON that
-                # json.loads rejects but still contains a parseable rescue_key array.
-                # Only runs when Strategy A found nothing.
-                if not content.strip():
-                    m = _re.search(
-                        r'\{[^{}]*?"' + _re.escape(rescue_key) + r'"\s*:\s*\[[\s\S]*?\]\s*\}',
-                        rc
-                    )
-                    if m:
-                        content = m.group(0)
+                content = _rescue_json_from_reasoning(rc, rescue_key)
             if not content.strip():
                 finish = choices[0].get("finish_reason", "") if choices else ""
                 abort(422,
