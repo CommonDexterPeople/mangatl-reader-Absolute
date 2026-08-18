@@ -23,10 +23,42 @@ const _corrOverlayCtl = {}; // pageIdx → box-overlay controller
 function _corrStoreKey(pageIdx)  { return `${_activeChapterId}_${pageIdx}`; }
 function _corrLocalKey(pageIdx)  { return `mtl_corr_${_activeChapterId}_${pageIdx}`; }
 
+// A saved draft is only trustworthy for the EXACT region set it was made
+// against. Chapter+page alone is not a strong enough key: a MangaDex
+// chapter ID can be revisited, a local/Suwayomi source can theoretically
+// reuse an id, and — more commonly — the SAME page can get re-OCR'd with
+// different settings (source language, Vision toggle, merge-sensitivity
+// slider, or just a server-side algorithm change) without the user ever
+// touching Correct in between. In every one of those cases the fresh
+// region set from the server no longer matches what a stale draft was
+// drafted against, but nothing about the chapterId/pageIdx pair changes,
+// so a plain existence check on mtl_corr_<chapterId>_<pageIdx> can't tell
+// the difference between "my real earlier edits" and "leftover data from
+// something else that happens to share this key".
+//
+// _corrSourceSignature is a cheap fingerprint of the page's CURRENT fresh
+// region data (count + concatenated raw OCR text) — recomputed every time
+// a draft is saved, and compared every time one is loaded. If a saved
+// draft's signature doesn't match the current page's fresh signature, the
+// draft is treated as stale and discarded rather than silently trusted.
+// This isn't cryptographic — collisions are fine to miss occasionally,
+// since correctly rejecting a genuinely-different region set is the goal,
+// not tamper-proofing local storage.
+function _corrSourceSignature(pd) {
+  if (!pd) return '';
+  const base = pd.sortedRegions || pd.autoRegions || [];
+  // Text, not translation — text is what OCR/merge actually produced and
+  // is stable across re-translation; tl can legitimately change (e.g. a
+  // different target language) without the underlying regions being stale.
+  return `${base.length}|${base.map(r => (r.text || '').trim()).join('\u241F')}`;
+}
+
 function _saveCorrections(pageIdx) {
   try {
+    const pd  = _pageStore.get(_corrStoreKey(pageIdx));
+    const sig = _corrSourceSignature(pd);
     localStorage.setItem(_corrLocalKey(pageIdx),
-      JSON.stringify({ regions: _corrWork[pageIdx], savedAt: Date.now() }));
+      JSON.stringify({ regions: _corrWork[pageIdx], savedAt: Date.now(), sourceSig: sig }));
   } catch(e) { console.warn('Could not save corrections', e); }
 }
 
@@ -38,12 +70,29 @@ function _loadCorrections(pageIdx) {
 }
 
 function _initWorkingRegions(pageIdx) {
+  const pd  = _pageStore.get(_corrStoreKey(pageIdx));
   const saved = _loadCorrections(pageIdx);
+
   if (saved?.regions?.length) {
-    _corrWork[pageIdx] = JSON.parse(JSON.stringify(saved.regions));
-    return;
+    const currentSig = _corrSourceSignature(pd);
+    // sourceSig is undefined on drafts saved before this check existed —
+    // treat those as trusted once (grandfathered), rather than discarding
+    // every pre-existing user's in-progress edits the moment this ships.
+    // Going forward every save carries a real signature, so this
+    // grandfather path only ever applies to the one-time transition.
+    const staleDraft = saved.sourceSig !== undefined && saved.sourceSig !== currentSig;
+    if (staleDraft) {
+      console.warn(`Discarding stale correction draft for page ${pageIdx} `
+        + `(saved data no longer matches this page's current OCR regions — `
+        + `likely a re-OCR, a reused chapter id, or unrelated cached data).`);
+      try { localStorage.removeItem(_corrLocalKey(pageIdx)); } catch {}
+      // fall through to rebuild from pd below, same as the no-draft case
+    } else {
+      _corrWork[pageIdx] = JSON.parse(JSON.stringify(saved.regions));
+      return;
+    }
   }
-  const pd = _pageStore.get(_corrStoreKey(pageIdx));
+
   if (!pd) { _corrWork[pageIdx] = []; return; }
   // Prefer sortedRegions (translated) over raw autoRegions so the correction
   // sidebar shows real tl values instead of hardcoded '—' for every bubble.
@@ -92,6 +141,16 @@ function closeCorrection(pageIdx) {
 
 // ── HTML builder ──────────────────────────────
 function _buildCorrHTML(pageIdx, imgSrc) {
+  // Check Flow is a continuity-analysis pass — it judges whether a pronoun
+  // matches who's speaking, whether tone holds across lines, etc. That's an
+  // inherently LLM reasoning task, not a translation task, so unlike
+  // translateBatch/translateSingleWithContext there's no DeepL equivalent
+  // to dispatch to here — DeepL has no capability to "read a scene and spot
+  // a continuity break" at all, it's a plain string-in/string-out
+  // translator. Disabling with a clear reason beats letting the button
+  // silently misroute a DeepL key into checkPageFlow()'s /translate call
+  // (which has no 'deepl' branch and would fail confusingly).
+  const isDeepL = getModelInfo().provider === 'deepl';
   return `
 <div class="corr-layout">
   <div class="corr-left">
@@ -118,7 +177,10 @@ function _buildCorrHTML(pageIdx, imgSrc) {
   </button>
   <button class="corr-btn-retrans" id="corr-retrans-${pageIdx}" onclick="retranslatePage(${pageIdx})">↺ RE-TRANSLATE ALL</button>
   <button class="corr-btn-retrans" id="corr-checkflow-${pageIdx}" onclick="checkPageFlow(${pageIdx})"
-    title="One AI call re-reads every translation on this page together and flags lines that break story/dialogue flow">
+    ${isDeepL ? 'disabled' : ''}
+    title="${isDeepL
+      ? 'Not available with DeepL — continuity checking (does this pronoun match who\u2019s speaking? does the tone hold across lines?) requires an LLM to reason about the scene. Switch to Gemini or DeepSeek to use Check Flow.'
+      : 'One AI call re-reads every translation on this page together and flags lines that break story/dialogue flow'}">
     ✓ CHECK FLOW
   </button>
   <button class="corr-btn-retrans" id="corr-redovision-${pageIdx}" onclick="closeCorrection(${pageIdx}); redoPageWithVision(${pageIdx})"
@@ -277,9 +339,26 @@ async function _finalizeBox(pageIdx, box, pd, useVision = false) {
   let ocrText = '';
   if (useVision) {
     // ── /vision-crop — Gemini reads the cropped region ─────────────────────
-    const key     = document.getElementById('ai-key')?.value?.trim() || '';
-    const modelId = getModelId();
-    if (!key) { toast('Gemini API key required for Vision Draw.'); return; }
+    // Key source depends on which provider is translating — see
+    // ocr-client.js's ocrPage() for the identical reasoning: Vision always
+    // calls Gemini regardless of the translator, so under DeepL/DeepSeek
+    // mode the Gemini key has to come from the separate vision-ocr-key
+    // field instead of the main ai-key field (which holds a non-Gemini key
+    // in that case).
+    const info    = getModelInfo();
+    const needsSeparateVisionKey = info.provider === 'deepl' || info.provider === 'deepseek';
+    const key     = info.provider === 'gemini'
+      ? (document.getElementById('ai-key')?.value?.trim() || '')
+      : needsSeparateVisionKey
+      ? (document.getElementById('vision-ocr-key')?.value?.trim() || '')
+      : '';
+    const modelId = info.provider === 'gemini' ? getModelId() : 'gemini-3.5-flash';
+    if (!key) {
+      toast(needsSeparateVisionKey
+        ? 'Gemini key required for Vision Draw — add one under Vision OCR in Reading Preferences.'
+        : 'Gemini API key required for Vision Draw.');
+      return;
+    }
     try {
       const res = await fetch('/vision-crop', {
         method:'POST', headers:{'Content-Type':'application/json'},
@@ -292,6 +371,14 @@ async function _finalizeBox(pageIdx, box, pd, useVision = false) {
       } else {
         const data = await res.json();
         ocrText = data.text || '';
+        // data.usage is only present when the server actually got a
+        // usageMetadata block back from Gemini (see server.py's
+        // vision_crop()) — same shape/condition as ocr-client.js's /ocr
+        // handling, so a Vision Draw box counts toward the cost tracker
+        // exactly like Vision OCR on a full page already does.
+        if (data.usage) {
+          recordUsage('vision-crop', data.usage, 'gemini', data.usage_model || modelId);
+        }
       }
     } catch(e) { toast(`Vision crop failed: ${e.message}`); }
   } else {
@@ -394,7 +481,10 @@ function _renderCorrSidebar(pageIdx) {
     </div>
     <textarea class="corr-textarea corr-tl-textarea" id="ctl-${pageIdx}-${id}" rows="4"
       title="Edit the translated text directly — this is what gets exported"
-      placeholder="—">${esc(r.tl && r.tl !== '—' ? r.tl : '')}</textarea>`;
+      placeholder="—">${esc(r.tl && r.tl !== '—' ? r.tl : '')}</textarea>
+    <button class="corr-action-btn" style="width:100%;margin-top:0.4rem"
+      title="Add this term to the series glossary, so future pages translate it the same way"
+      onclick="_quickAddToGlossary(${pageIdx},${id})">+ ADD TO GLOSSARY</button>`;
 
   document.getElementById(`cta-${pageIdx}-${id}`)?.addEventListener('input', e=>{
     const reg = (_corrWork[pageIdx]||[]).find(x=>x.id===id);
@@ -420,6 +510,21 @@ function _renderCorrSidebar(pageIdx) {
     const reg = (_corrWork[pageIdx]||[]).find(x=>x.id===id);
     if (reg) { reg.tl = e.target.value.trim() ? e.target.value : '—'; _saveCorrections(pageIdx); }
   });
+}
+
+// Quick-add for the Correct UI sidebar's "+ ADD TO GLOSSARY" button. Reads
+// the LIVE textarea values (not the closed-over `r` from when the sidebar
+// was rendered) so an edit the person just typed but hasn't clicked away
+// from yet is what actually gets prefilled — same reasoning the ctl-/cta-
+// input listeners above already read e.target.value rather than a stale
+// region snapshot. A whole OCR line is rarely the term itself (e.g. "Hey
+// there, Yodaka!" vs. just "Yodaka") — prefilled into the modal's inputs
+// rather than auto-saved, so the person can trim it down to the actual
+// term before it's written to the glossary.
+function _quickAddToGlossary(pageIdx, id) {
+  const srcEl = document.getElementById(`cta-${pageIdx}-${id}`);
+  const tlEl  = document.getElementById(`ctl-${pageIdx}-${id}`);
+  openGlossaryModal({ src: srcEl?.value || '', tl: tlEl?.value || '' });
 }
 
 // ── Split UI ──────────────────────────────────
@@ -590,6 +695,39 @@ async function translateSingleWithContext(region, contextRegions, sourceLang, ta
   const modelId = getModelId();
   if (!key) throw new Error(`${info.label} API key not set.`);
 
+  // DeepL branch — same reasoning as translateBatchDeepL(): DeepL is not
+  // an LLM, so the page-context/system-prompt/classification machinery
+  // below this point doesn't apply to it at all. Context lines exist to
+  // help an LLM keep names/pronouns/register consistent across a page —
+  // DeepL has no way to consume that kind of freeform instruction, it only
+  // takes a string and returns a translated string. This is the single-
+  // region equivalent of translateBatchDeepL(), reusing the same target-
+  // language validation (throws the same clear "DeepL doesn't support
+  // this language" error rather than sending a request DeepL would reject).
+  if (info.provider === 'deepl') {
+    const deepLTarget = _DEEPL_TARGET_LANG_MAP[targetLang];
+    if (!deepLTarget) {
+      throw new Error(
+        `DeepL doesn't support "${targetLang}" as a target language. ` +
+        `Switch to Gemini or DeepSeek for this language, or pick a different target language.`
+      );
+    }
+    const res = await fetch('/translate-deepl', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        key, texts: [region.text],
+        target_lang: deepLTarget, source_lang: sourceLang,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.description || err?.message || `DeepL error ${res.status}`);
+    }
+    const data = await res.json();
+    recordUsage('translate', null, 'deepl', 'deepl', 0, 0, region.text.length);
+    return { tl: (data.translations || [])[0] || '—', t: 'speech' };
+  }
+
   // Build context from nearby already-translated, non-deleted regions.
   // Using the 8 closest neighbours by vertical position (cy) rather than the
   // full page keeps the context payload tight while still covering every bubble
@@ -616,11 +754,32 @@ async function translateSingleWithContext(region, contextRegions, sourceLang, ta
       provider:    info.provider,
       key,
       source_lang: sourceLang,
+      // DeepSeek only — see server.py's /translate docstring. This call's
+      // prompt asks for a bare {"tl":...,"t":...} object, not the
+      // {"translations":[...]} shape the server's rescue defaults to, so
+      // without this, a thinking-mode response that lands in
+      // reasoning_content instead of content could never be rescued and
+      // always 422'd instead.
+      rescue_key: 'tl',
       payload: {
         model:       modelId,
         temperature: 0.3,
         max_tokens:  800,
-        ...(info.provider === 'deepseek' ? { response_format: { type: 'json_object' } } : {}),
+        ...(info.provider === 'deepseek' ? {
+          response_format: { type: 'json_object' },
+          // DeepSeek V4 models default to thinking mode ON. That's fine for
+          // the full-page batch call (translateBatch, 8000-token budget —
+          // plenty of room for a reasoning pass AND the JSON answer), but
+          // this single-region call's 800-token budget is sized for a
+          // plain translate+classify, not a reasoning pass first — thinking
+          // mode routinely ate the whole budget before ever writing the
+          // final JSON to `content`, leaving content empty. rescue_key above
+          // is a safety net for whenever that still happens; explicitly
+          // disabling thinking here (mirrors _translate_gemini's
+          // thinkingBudget:0 for the same reason) stops it from happening
+          // in the first place for a task this simple.
+          thinking: { type: 'disabled' },
+        } : {}),
         messages: [
           {
             role: 'system',
@@ -811,6 +970,10 @@ async function checkPageFlow(pageIdx) {
         provider: info.provider,
         key,
         source_lang: pd.sourceLang,
+        // DeepSeek only — this prompt's top-level JSON key is "issues", not
+        // the server's "translations" default; see server.py's /translate
+        // docstring and translateSingleWithContext's identical fix above.
+        rescue_key: 'issues',
         payload: {
           model: modelId,
           temperature: 0.2,

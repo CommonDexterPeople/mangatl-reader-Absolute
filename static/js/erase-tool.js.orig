@@ -55,7 +55,6 @@ function _ensureFontsLoaded() {
 }
 
 function openEraseTool() {
-  _eraseSyncAiInpaintToggle();
   _eraseBoxes = [];
   _eraseImgMeta = null;
   _eraseResultBlob = null;
@@ -79,21 +78,6 @@ function openEraseTool() {
   const sb = document.getElementById('erase-sidebar');
   if (sb) sb.innerHTML = '';
   _renderEraseBatchPanel();
-}
-
-// BUG FIX: #erase-ai-inpaint (index.html) is hardcoded to "off" and
-// nothing was ever syncing it from the Settings-panel value on open — so
-// a person who set Settings > Textured-area erase quality > AI inpaint
-// would land on this screen looking at a toolbar that still read
-// "Classical inpaint". getAiInpaintSetting() (utils.js) reads THIS
-// toolbar element whenever it's present on screen and takes it over
-// localStorage, so the stale display wasn't just cosmetic — it silently
-// overrode their saved setting back to "off" on every export. Called at
-// the top of openEraseTool(), before the toolbar is even shown, so the
-// dropdown always reflects the real setting the first time it's visible.
-function _eraseSyncAiInpaintToggle() {
-  const el = document.getElementById('erase-ai-inpaint');
-  if (el) el.value = localStorage.getItem('mtl_ai_inpaint') === 'on' ? 'on' : 'off';
 }
 
 /**
@@ -130,11 +114,6 @@ async function loadEraseChapter() {
     _erasePageIdx = 0;
     _eraseChapterId  = chapterId;
     _eraseSourceLang = meta?.translatedLanguage || 'en';
-    // Same resolution pipeline.js's _runChapterPipeline uses — see
-    // glossary.js's file header. meta can be null here (fetch failure is
-    // tolerated, see comment above) so fall back to the raw chapterId as
-    // a display name rather than passing undefined through.
-    setActiveGlossary(meta?.mangaId || null, meta?.mangaTitle || chapterId);
     // Fresh chapter — start a fresh batch rather than mixing pages from a
     // previously loaded chapter/local source into the same zip, and drop
     // any local blobs that source was holding (see local-source.js).
@@ -249,13 +228,6 @@ function _loadEraseLocalChapter(chapter) {
   _erasePageIdx    = 0;
   _eraseChapterId  = chapter.id;
   _eraseSourceLang = chapter.sourceLang;
-  // chapterFromFileList/chapterFromCbz return {id, kind, title, ...} with
-  // no mangaId (genuinely no stable series ID for a local folder/CBZ);
-  // chapterFromSuwayomi DOES carry one (chapter.mangaId, its own internal
-  // manga id) — see suwayomi-api.js — so a Suwayomi series gets a real
-  // id-keyed glossary here, same as MangaDex, while local/CBZ falls back
-  // to the name-keyed path. See glossary.js's file header for the split.
-  setActiveGlossary(chapter.mangaId || null, chapter.title || chapter.id);
   document.getElementById('erase-url').value = ''; // loaded locally, not by chapter URL
   _loadEraseCurrentPage();
   toast(`Loaded ${_erasePageList.length} page${_erasePageList.length !== 1 ? 's' : ''} from ${chapter.kind === 'cbz' ? '.cbz' : 'folder'}.`);

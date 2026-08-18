@@ -42,6 +42,10 @@ _REQUIRED = {
     "flask":                  "flask",
     "requests":               "requests",
     "easyocr":                "easyocr",
+    "rapidocr":                "rapidocr",   # optional 2nd local OCR engine — see
+                                              # _run_rapidocr_detection docstring for
+                                              # why this exists alongside EasyOCR
+                                              # rather than replacing it.
     "pillow":                 "PIL",
     "numpy":                  "numpy",
     "opencv-python-headless": "cv2",
@@ -63,6 +67,8 @@ def _bootstrap():
         print(f"    •  {p}")
     print()
     print("  EasyOCR includes a language model (~100–400 MB).")
+    print("  RapidOCR bundles a small default model in the package itself")
+    print("  (~30 MB) — no separate download for most languages.")
     print("  This may take 2–5 minutes. Please wait.")
     print("  The browser will open automatically when ready.")
     print()
@@ -320,6 +326,29 @@ _MIN_CONF_MAP = {
     # removed once the underlying mechanism existed.
 }
 
+# Confidence floor for very short (<=2 character, after stripping) OCR
+# fragments — deliberately much lower than _MIN_CONF_MAP's per-language
+# floors. Verified against real EasyOCR output: standalone short function
+# words that are entirely legitimate ("A" as in Spanish/Hungarian "a/the",
+# French "a" as in "has") scored as low as 0.155-0.156 confidence — well
+# below the default 0.35 floor — and were being silently discarded,
+# truncating the start of otherwise-correct sentences. A short fragment is
+# inherently harder for the recognition model to score confidently (little
+# surrounding context to disambiguate), so low confidence alone isn't as
+# strong a noise signal for short text as it is for longer text.
+#
+# Used in two places with two different roles:
+#   - _run_easyocr_detection applies it as a hard floor (not deferred to
+#     _merge_bubble_regions' cluster-aware filtering) because a stray 1-2
+#     character noise blob sitting near real text is a real risk the
+#     cluster-adjacency trust signal doesn't protect against the same way
+#     it does for longer, more distinctive fragments. It's also passed in
+#     as _merge_bubble_regions' clustered_floor for confident-neighbour
+#     fragments — see that function's docstring.
+#   - /ocr-crop (via _easyocr_readtext_primary) applies it directly since
+#     a single-region crop has no merge step to defer to.
+SHORT_WORD_MIN_CONF = 0.12
+
 # ─── Language-specific translation hints ──────────────────────────────────────
 # Appended to the DeepSeek system prompt so the model understands
 # cultural/linguistic quirks of each source language.
@@ -332,11 +361,14 @@ _LANG_HINTS = {
     'th':    "Thai comics use politeness particles (ครับ for male speakers, ค่ะ/นะ for female). Reflect the speaker's politeness level and gender in the English tone where natural.",
     'ru':    "Russian manga often uses diminutives and expressive suffixes for names and nouns. Preserve endearment or mockery implied by diminutive forms rather than using the base name.",
     'fr':    "French comics distinguish 'tu' (informal) and 'vous' (formal/plural). Reflect the intimacy or formality of address in the English translation.",
-    'es':    "Spanish comics may be from Spain or Latin America with regional vocabulary differences. Translate to neutral international English unless a specific dialect is obvious.",
+    'es':    "Castilian Spanish (Spain). Distinguishes informal 'tú' from formal 'usted' — same shape as French tu/vous. Plural also splits by formality: informal 'vosotros' vs. formal 'ustedes' (Latin American Spanish does not make this plural distinction — see 'es-la'). Reflect the formality/intimacy of address in the English translation.",
+    'es-la': "Latin American Spanish. Distinguishes informal address from formal 'usted', but which informal pronoun appears varies by the writer's region: 'tú' (most of Latin America), or 'vos' (Argentina, Uruguay, Paraguay, and used informally in parts of Central America/Colombia) — 'vos' is not a typo or an unusual formal register, it's simply the informal 'you' in those dialects, with its own verb conjugation (e.g. 'vos tenés' = 'tú tienes'). The plural 'ustedes' covers both formal and informal in Latin American Spanish (unlike Spain's tú/vosotros vs. usted/ustedes split). Reflect the underlying formality level in English regardless of which informal pronoun is used.",
     'de':    "German comics use 'du' (informal) vs 'Sie' (formal). Preserve the formality level in English dialogue.",
     'pl':    "Polish uses grammatical gender and case extensively in dialogue — pay attention to whether the speaker refers to themselves as male or female when choosing English phrasing.",
     'tr':    "Turkish distinguishes formal 'siz' from informal 'sen', and verb suffixes encode the speaker's certainty/evidentiality (e.g. -mış for hearsay or surprise). Reflect the address formality in English, and render evidential surprise with natural English cues ('apparently', 'turns out') rather than dropping it.",
     'hu':    "Hungarian dialogue relies on verb conjugation and suffixes rather than pronouns for formality (e.g. 'maga/ön' formal vs 'te' informal address is often implied, not stated outright). Infer and preserve the formality level in English phrasing rather than defaulting to neutral 'you' throughout.",
+    'pt':    "European Portuguese: 'tu' is the default informal address (used with family, friends, peers); 'você' reads as formal-to-distant and can sound cold or corrective when used with someone the speaker is on familiar terms with — do not treat 'você' as neutral. 'O senhor'/'a senhora' is more deferential still. Reflect this formality gradient in the English translation rather than flattening everyone to 'you'.",
+    'pt-br': "Brazilian Portuguese: 'você' is the default, near-universal address across both informal and formal contexts — it does not itself signal formality the way 'você' does in European Portuguese. Genuine formality is instead carried by 'o senhor'/'a senhora', or regionally by 'tu' (esp. southern Brazil, informal). Don't read 'você' as implying distance or politeness; look to word choice, honorifics, and context for the actual register.",
 }
 
 
@@ -710,6 +742,395 @@ def _region_is_flat_light(cv_img: np.ndarray, x1: int, y1: int, x2: int, y2: int
     return float(np.mean(matches)) >= _FLATTEN_COVERAGE_THRESHOLD
 
 
+# ─── AI (LaMa) inpaint — optional, heavier alternative to NS/TELEA ───────────
+# Classical cv2.inpaint (NS/TELEA, below) is PDE-based diffusion: it
+# extrapolates fill pixels from the mask boundary inward using local
+# pixel-intensity gradients. That works fine for flat fills and simple
+# gradients, but it has no concept of "this is hair" or "this screentone
+# repeats" or "this line continues on the other side of the box" — on
+# genuinely textured/baked-in-art regions it tends to smear rather than
+# reconstruct (see this file's own texture-routing comments above
+# _TEXTURE_VARIANCE_THRESHOLD). LaMa (a learned inpainting model) has actual
+# priors over image structure/texture continuation, so it can do meaningfully
+# better on exactly that class of region — at real cost: a ~200MB one-time
+# model download, and CPU inference that's on the order of several seconds
+# per page (not per box — see _erase_region_ai_inpaint's docstring), vs.
+# near-instant for cv2.inpaint.
+#
+# UNVALIDATED CLAIM, same standard this file holds every other quality claim
+# to: LaMa's advantage was NOT confirmed here against a real manga page with
+# real baked-in art (hair/screentone/linework under a bubble) — only
+# against a synthetic diagonal-hatching test image, where classical NS
+# actually looked visually cleaner (a smooth gray smudge vs. LaMa's faint
+# warm-toned ghost-of-the-mask-rectangle). Simple periodic low-contrast
+# hatching is exactly the kind of texture classical inpainting already
+# handles reasonably — it is NOT a stand-in for the irregular, semantically
+# structured art (hair strands, crowd backgrounds, non-repeating linework)
+# this feature is actually meant to help with. DO NOT treat this as "LaMa
+# tested worse, don't bother" — the test was a bad proxy, not a real
+# verdict — but also do not ship UI copy claiming "AI inpaint looks better"
+# until it's actually been checked against a real scanlation page with real
+# textured art under text, the same bar RapidOCR's per-language
+# recommendations and every threshold in this file were held to before
+# being trusted.
+#
+# Lazy singleton, mirrors _get_rapidocr_engine()'s pattern: import torch and
+# download the model only on first actual use of this feature, not at server
+# startup, so a person who never enables this setting never pays its cost.
+_lama_engine = None
+_lama_engine_lock = threading.Lock()
+_lama_infer_lock  = threading.Lock()   # serialises PyTorch inference
+                                        # (not thread-safe) -- same
+                                        # reasoning as _infer_lock /
+                                        # _rapidocr_infer_lock above;
+                                        # missing here before this fix,
+                                        # unlike every other PyTorch/
+                                        # onnxruntime call in this file.
+
+# Long-edge cap (px) for the image actually handed to LaMa's forward pass.
+# LaMa's own paper trains at 256x256 and demonstrates the model generalises
+# WITHOUT further training up to 1536x1536; the paper's broader claim is good
+# results to roughly ~2k. Past that there's no evidence of a quality payoff,
+# only more CPU time -- exactly the wrong trade on the low-end hardware this
+# project targets. MangaDex pages are already web-sized and rarely hit this,
+# but local-folder/CBZ mode has no pixel-dimension ceiling (only the 25MB
+# encoded-payload cap in _load_image_bytes, which a well-compressed high-DPI
+# raw scan can clear easily) -- so this only matters for that source, but
+# matters a lot when it applies. Classical cv2.inpaint does NOT get this
+# treatment: its cost is dominated by mask area, not image size, and it's
+# already fast regardless of page resolution.
+_LAMA_MAX_DIM = 1536
+
+# Where downloaded model checkpoints get cached locally, so re-launching the
+# app doesn't re-download a ~200MB file every time. Didn't already exist
+# anywhere in this file (checked -- only precedent was rates.json using
+# __file__-relative pathing, no dedicated model-cache dir), so defined here
+# following that same pattern rather than inventing a second convention.
+# A "models" subfolder next to server.py -- gets created on first use if
+# missing (see _download_lama_checkpoint's os.makedirs call).
+_MODEL_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "models"
+)
+
+# Anime/manga-finetuned big-lama checkpoint, ~300k manga+anime training
+# images -- same weights IOPaint ships as --model=anime-lama.
+#
+# IMPORTANT: this is Sanster/models' pre-converted TorchScript .pt, NOT
+# dreMaz/AnimeMangaInpainting's raw lama_large_512px.ckpt on Hugging Face.
+# Same underlying weights, different file format:
+#   - dreMaz's .ckpt on HF is a raw training state_dict (keyed under
+#     "gen_state_dict") -- CONFIRMED BROKEN for this loader: torch.jit.load
+#     fails on it with "failed locating file constants.pkl". Using it would
+#     need the original advimman/lama model class to reconstruct the module,
+#     load_state_dict onto it, then script/trace it -- extra work, and not
+#     what's used below.
+#   - Sanster/models' anime-manga-big-lama.pt IS a real TorchScript archive
+#     -- CONFIRMED by unzipping it directly: root contains constants.pkl,
+#     data.pkl, version, and a code/ tree with the actual scripted
+#     saicinpainting.training.modules.ffc (Fast Fourier Convolution) module
+#     graph, i.e. LaMa's real architecture, serialized whole. This is what
+#     IOPaint's own --model=anime-lama loads via load_jit_model -- same
+#     packaging as vanilla big-lama.pt, just different weights. MD5 of a
+#     verified download matches IOPaint's own declared checksum exactly.
+#
+# Same forward-pass signature (image, mask) -> image either way -- no other
+# code in _erase_region_ai_inpaint needs to change, only which weights load.
+_ANIME_MANGA_LAMA_URL = (
+    "https://github.com/Sanster/models/releases/download/"
+    "AnimeMangaInpainting/anime-manga-big-lama.pt"
+)
+_ANIME_MANGA_LAMA_MD5 = "29f284f36a0a510bcacf39ecf4c4d54f"
+_ANIME_MANGA_LAMA_LOCAL_PATH = os.path.join(
+    _MODEL_CACHE_DIR, "anime-manga-big-lama.pt"
+)
+
+# Threshold (0-255) for treating a page as grayscale before deciding whether
+# to strip color from LaMa's output (see the neutralisation step in
+# _erase_region_ai_inpaint below). Measured directly against a real B&W manga
+# page: legitimate JPEG chroma noise on an actually-grayscale scan tops out
+# around 12-18 at the 99th percentile (edge-ringing near sharp black/white
+# transitions, not real color); a genuinely colored page would show far more
+# pervasive channel difference than that, not just occasional edge outliers.
+# 20 leaves comfortable margin above the noise floor without being so loose it
+# would misclassify real color content. Only checked against ONE sample page
+# so far, though -- same standard as every other threshold in this file: sanity-
+# check it against a few more real pages (including an actual color/manhwa
+# page if this project ever handles those) before fully trusting it.
+_GRAYSCALE_CHANNEL_TOLERANCE = 20
+
+
+class _AiInpaintUnavailable(Exception):
+    """Raised when AI inpaint was requested but the model/dependency isn't
+    available (missing package, download failure, etc.) — kept as its own
+    exception type (rather than a bare Exception) so the /export-page route
+    can surface this as a specific, actionable 503 instead of folding it
+    into the generic 422 'Typesetting failed' every other typesetting error
+    returns. A person who opted into this feature and hits a missing-
+    dependency case needs to know THAT'S what happened, not just that
+    typesetting failed for some unspecified reason."""
+    pass
+
+
+def _download_lama_checkpoint(url: str, dest_path: str, expected_md5: str = None,
+                               chunk_size: int = 1 << 20) -> None:
+    """Stream-download a LaMa checkpoint to dest_path, verifying its MD5 if
+    given. Raises _AiInpaintUnavailable on any failure (network error,
+    checksum mismatch, etc.) rather than leaving a corrupt/partial file
+    behind for the next call to trip over silently.
+
+    Downloads to a .part sibling file first and renames on success, so a
+    failed/interrupted download never leaves something at dest_path that
+    os.path.exists() would treat as "already cached" on the next call.
+    """
+    import hashlib
+    import urllib.request
+
+    tmp_path = dest_path + ".part"
+    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+    try:
+        md5 = hashlib.md5() if expected_md5 else None
+        with urllib.request.urlopen(url, timeout=60) as resp, \
+             open(tmp_path, "wb") as f:
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                if md5 is not None:
+                    md5.update(chunk)
+
+        if expected_md5 is not None:
+            actual = md5.hexdigest()
+            if actual.lower() != expected_md5.lower():
+                raise _AiInpaintUnavailable(
+                    f"Downloaded LaMa checkpoint failed MD5 verification "
+                    f"(expected {expected_md5}, got {actual}) -- the "
+                    f"download was likely corrupted or interrupted. Try "
+                    f"again; if this keeps happening the upstream file may "
+                    f"have changed."
+                )
+
+        os.replace(tmp_path, dest_path)  # atomic on same filesystem
+    except _AiInpaintUnavailable:
+        raise
+    except Exception as e:
+        raise _AiInpaintUnavailable(
+            f"Failed to download LaMa checkpoint from {url}: {e}"
+        )
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def _get_lama_engine():
+    """Lazily construct and cache the LaMa inpainting engine. First call
+    triggers a torch import and (if not already cached locally by the
+    underlying library) a ~200MB model download — both deliberately deferred
+    to here rather than server startup, matching _get_rapidocr_engine()'s
+    same "don't cost anyone who doesn't use this feature" reasoning.
+
+    Raises _AiInpaintUnavailable on failure (missing package, download
+    failure, corrupt cache, etc.) with a plain-language message — caller is
+    responsible for turning that into a user-facing error, not swallowing
+    it, since a silent fallback to classical inpaint would defeat the point
+    of the person having explicitly opted into this mode.
+
+    DELIBERATELY NOT in _REQUIRED / _bootstrap() above: this needs
+    torch, which is a real multi-hundred-MB install on top of the LaMa
+    model weights themselves — adding it to the mandatory first-run
+    bootstrap would slow down and bloat the install for every single user
+    of this tool, including the (likely large) majority who will never
+    touch this optional feature. Auto-installed here instead, lazily, only
+    for someone who actually flips this setting on — same one-time-cost-
+    only-if-you-use-it shape as the model download itself.
+    """
+    global _lama_engine
+    if _lama_engine is not None:
+        return _lama_engine
+    with _lama_engine_lock:
+        if _lama_engine is not None:
+            return _lama_engine
+        try:
+            if importlib.util.find_spec("simple_lama_inpainting") is None:
+                print("  [AI inpaint] First use — installing "
+                      "simple-lama-inpainting (pulls in torch if not "
+                      "already present; this can take a few minutes and "
+                      "is a one-time cost)...")
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "--quiet",
+                     "--break-system-packages", "simple-lama-inpainting"]
+                )
+            # Download the manga/anime-finetuned checkpoint if it isn't
+            # already cached locally. NOTE: condition is "does NOT exist" --
+            # we only need to fetch it once, ever, per machine.
+            if not os.path.exists(_ANIME_MANGA_LAMA_LOCAL_PATH):
+                print("  [AI inpaint] First use — downloading manga/anime "
+                      "LaMa checkpoint (~200MB, one-time)...")
+                _download_lama_checkpoint(
+                    _ANIME_MANGA_LAMA_URL,
+                    _ANIME_MANGA_LAMA_LOCAL_PATH,
+                    expected_md5=_ANIME_MANGA_LAMA_MD5,
+                )
+
+            # simple_lama_inpainting's actual source (models/model.py) reads
+            # the LAMA_MODEL env var for its checkpoint override -- NOT
+            # LAMA_CHECKPOINT_PATH, which it does not recognise and would
+            # silently ignore, leaving it to fall back to its own default
+            # vanilla checkpoint. Confirmed against the library's real source
+            # on GitHub before relying on this, rather than assumed.
+            os.environ["LAMA_MODEL"] = _ANIME_MANGA_LAMA_LOCAL_PATH
+
+            from simple_lama_inpainting import SimpleLama
+            _lama_engine = SimpleLama()
+            print("  [AI inpaint] LaMa model ready.")
+            return _lama_engine
+        except subprocess.CalledProcessError as e:
+            raise _AiInpaintUnavailable(
+                "AI inpaint's dependencies failed to auto-install. Run "
+                "manually: pip install simple-lama-inpainting"
+            ) from e
+        except ImportError as e:
+            raise _AiInpaintUnavailable(
+                "AI inpaint isn't installed. Run: pip install "
+                "simple-lama-inpainting (see README)."
+            ) from e
+        except Exception as e:
+            raise _AiInpaintUnavailable(
+                f"AI inpaint model failed to load: {e}"
+            ) from e
+
+
+def _erase_region_ai_inpaint(cv_img: np.ndarray, boxes_px: list,
+                              blend_base_img: np.ndarray = None) -> np.ndarray:
+    """LaMa counterpart to _erase_region_inpaint — same batched-mask,
+    safety-margin, and feathering approach, only the fill algorithm differs.
+
+    blend_base_img: what the final feather-blend (bottom of this function)
+    falls back to OUTSIDE the mask. Defaults to cv_img itself — the normal
+    case, where the caller wants everywhere outside the mask left exactly
+    as they gave it to us. Only _reerase_smudged_regions' retry path passes
+    something different: it wants LaMa's own reconstruction to see the true
+    ORIGINAL source pixels as `cv_img` (not the first pass's already-erased/
+    gray-filled pixels, which would bias the reconstruction toward whatever
+    the first pass produced) while still wanting the outside-mask fallback
+    to be the ALREADY-ERASED page from the first pass. Those are two
+    different concerns that used to be conflated into one `cv_img`
+    parameter: passing orig_cv_img for both meant the blend fell back to
+    the pristine, un-erased original everywhere outside the retry boxes —
+    silently reverting every previously-erased region on the page back to
+    raw source pixels, with translated text then drawn on top of it by the
+    typeset step. See _reerase_smudged_regions' docstring for the confirmed
+    bug this parameter exists to fix.
+
+    Deliberately does NOT do the NS-vs-TELEA texture-variance split
+    _erase_region_inpaint uses: that split exists because classical inpaint
+    needs a different algorithm depending on local texture (flat vs.
+    gradient/structured). A single learned model doesn't have that same
+    per-method weakness, so every masked region here goes through one LaMa
+    call regardless of its own texture — simpler, and there's no evidence
+    (yet) that a texture-aware split would help a learned model the way it
+    helps the two classical methods.
+
+    One inference call per page (all regions batched into a single mask),
+    not one per region — LaMa's cost is dominated by the forward pass
+    itself, not mask area, so batching everything on the page into one call
+    is the only sane way to keep this from scaling linearly with region
+    count. Still measured at ~8s/page on CPU for a small test image during
+    development — see the module-level comment above this function for full
+    context; expect real full-resolution manga pages to cost more, not less.
+
+    Pages whose long edge exceeds _LAMA_MAX_DIM are downscaled before this
+    call and the RESULT upscaled back to (h, w) afterward (see below) --
+    caps worst-case CPU/memory cost on an oversized local-folder/CBZ scan
+    without touching quality on the typical page, which is already well
+    under the cap. See _LAMA_MAX_DIM's own comment for why 1536 specifically.
+    """
+    if blend_base_img is None:
+        blend_base_img = cv_img
+
+    _ERASE_SAFETY_MARGIN = 2
+    h, w = cv_img.shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    for (x1, y1, x2, y2) in boxes_px:
+        m = _ERASE_SAFETY_MARGIN
+        ey1, ey2 = max(0, y1 - m), min(h, y2 + m)
+        ex1, ex2 = max(0, x1 - m), min(w, x2 + m)
+        mask[ey1:ey2, ex1:ex2] = 255
+
+    engine = _get_lama_engine()
+
+    # Downscale image+mask together (same scale factor, so they stay pixel-
+    # aligned) if the page exceeds _LAMA_MAX_DIM on its long edge -- INTER_AREA
+    # for the image (best for shrinking photographic/screentoned content),
+    # INTER_NEAREST for the mask (must stay strictly binary 0/255; any
+    # interpolation that produces in-between values would hand the "binary
+    # mask" library a mask that isn't one -- see simple-lama-inpainting's own
+    # docs). `mask` and `cv_img` themselves are left untouched here: the
+    # feather blend at the bottom of this function still needs the ORIGINAL
+    # full-resolution versions of both.
+    scale = min(1.0, _LAMA_MAX_DIM / max(h, w))
+    if scale < 1.0:
+        sw, sh = max(1, round(w * scale)), max(1, round(h * scale))
+        infer_img  = cv2.resize(cv_img, (sw, sh), interpolation=cv2.INTER_AREA)
+        infer_mask = cv2.resize(mask, (sw, sh), interpolation=cv2.INTER_NEAREST)
+    else:
+        infer_img, infer_mask = cv_img, mask
+
+    img_pil = Image.fromarray(cv2.cvtColor(infer_img, cv2.COLOR_BGR2RGB))
+    mask_pil = Image.fromarray(infer_mask)
+    # Serialised: LaMa's forward pass goes through the same PyTorch
+    # thread-safety concern _infer_lock already documents for EasyOCR --
+    # threaded=True means two requests (e.g. the export panel running
+    # while the Erase Tool is used in another tab) could otherwise call
+    # into the model at once. Costs nothing on a single request, same as
+    # the other two inference locks.
+    with _lama_infer_lock:
+        result_pil = engine(img_pil, mask_pil)
+    result = cv2.cvtColor(np.array(result_pil), cv2.COLOR_RGB2BGR)
+
+    # LaMa's public checkpoint is trained on natural color photographs, and can
+    # invent small amounts of real (non-JPEG-noise) chroma in a reconstructed
+    # patch even when the rest of the page carries none -- observed directly on
+    # a real test page as faint colored specks in an otherwise pure-grayscale
+    # scan. There's no legitimate reason for an inpainted patch to carry color
+    # the source page never had, so on a page that's grayscale to begin with,
+    # force the model's output back to match it. Checked against the ORIGINAL
+    # page (cv_img), not the model's result -- classifying "is this page
+    # grayscale" from pristine pixels rather than from what the model just
+    # produced. Skipped entirely on a genuinely color source (manhwa/colored
+    # webtoons): forcibly desaturating the model's output there would be a
+    # worse bug than the one this fixes.
+    src_b, src_g, src_r = (cv_img[..., i].astype(np.int16) for i in range(3))
+    chroma_p99 = max(
+        np.percentile(np.abs(src_r - src_g), 99),
+        np.percentile(np.abs(src_g - src_b), 99),
+        np.percentile(np.abs(src_r - src_b), 99),
+    )
+    if chroma_p99 <= _GRAYSCALE_CHANNEL_TOLERANCE:
+        result = cv2.cvtColor(cv2.cvtColor(result, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
+
+    # Restores (h, w) two ways at once: the intentional case (we downscaled
+    # above, so result always comes back at (sw, sh) and needs upscaling to
+    # match the original page for the feather blend below) and the
+    # incidental case (some LaMa builds return a slightly different size
+    # than whatever they were given -- internal padding to a stride
+    # multiple, not always cropped back perfectly). Same fix either way, so
+    # one unconditional shape check covers both rather than needing to know
+    # which case actually happened.
+    if result.shape[:2] != (h, w):
+        result = cv2.resize(result, (w, h), interpolation=cv2.INTER_LANCZOS4)
+
+    # Same feathering as _erase_region_inpaint — algorithm-agnostic: it just
+    # blends "new pixels" against "original pixels" at the mask edge,
+    # regardless of which method produced the new pixels.
+    feather_px = 5
+    soft_mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=feather_px / 2)
+    alpha = (soft_mask.astype(np.float32) / 255.0)[..., None]
+    blended = (result.astype(np.float32) * alpha +
+               blend_base_img.astype(np.float32) * (1 - alpha))
+    return blended.astype(np.uint8)
+
+
 def _erase_region_inpaint(cv_img: np.ndarray, boxes_px: list) -> np.ndarray:
     """Erase all given pixel boxes at once via inpainting, then feather the
     inpainted patch back into the original image at the mask edges so the
@@ -827,6 +1248,284 @@ def _erase_region_flatten(pil_img: Image.Image, x1: int, y1: int, x2: int, y2: i
                     min(w, x2 + margin), min(h, y2 + margin)], fill=fill)
 
 
+# ─── Post-erase smudge detection & escalation ────────────────────────────────
+# Neither erase path (_erase_region_inpaint/_erase_region_ai_inpaint's
+# batched cv2/LaMa fill, or _erase_region_flatten's solid rectangle) can
+# tell on its own whether it actually finished the job. An OCR (or manual)
+# box that undershoots the real glyph extent — snug boxes routinely do,
+# ascenders/descenders/serifs right at the edge, a bubble whose text sits
+# close to its own outline — leaves a fragment of original-language ink
+# sitting just outside the erased rectangle: a visible dark smudge, or in
+# mild cases a recognizable leftover letter. This is checked for AFTER
+# erase, per-region, against the PRISTINE pre-erase page (not the erased
+# output alone — see _detect_residual_smudge's docstring for why that
+# distinction matters), and any region that still shows real leftover ink
+# is escalated: its own erase box is widened to the true extent of the
+# glyph run that was missed, then that widened box alone is re-erased
+# through AI inpaint (LaMa) if available, since a second pass with the
+# same algorithm on a still-too-small box would very often just leave the
+# same problem shifted rather than solved.
+_SMUDGE_DARK_DELTA = 45          # gray-level deviation from the region's own
+                                  # reference tone before a pixel counts as
+                                  # "still has real content", not noise
+_SMUDGE_DARK_RATIO_THRESHOLD = 0.006   # fraction of the box interior that
+                                        # must deviate before flagging
+_SMUDGE_MIN_BLOB_PX = 12         # OR: one compact deviating blob at least
+                                  # this big — catches a small corner-clipped
+                                  # letter even when it's a tiny fraction of
+                                  # a large box's total area
+_GLYPH_EXPAND_MAX_PX = 60         # how far _expand_box_to_glyph_extent's
+                                  # connected-component search is allowed to
+                                  # look past a flagged box's own edge, in
+                                  # any direction. Real undershoot (a
+                                  # clipped ascender/descender/serif) is a
+                                  # few px; this is already generous. Exists
+                                  # to structurally cap runaway growth when
+                                  # a box touches a page-spanning panel
+                                  # border's connected component — see that
+                                  # function's docstring.
+
+
+def _detect_residual_smudge(orig_cv_img: np.ndarray, erased_cv_img: np.ndarray,
+                             x1: int, y1: int, x2: int, y2: int,
+                             bubble_label_map=None) -> tuple:
+    """True if this box still shows real leftover source-page content after
+    erase — i.e. the erase undershot and a smudge or letter fragment
+    survived. Returns (is_smudged, dark_fraction, largest_blob_px).
+
+    Compares the erased box's interior against the PRISTINE pre-erase page
+    at the same coordinates, not against a reference color inferred from
+    context alone. This is the difference that makes the check reliable:
+    an earlier version tried to infer whether erased pixels were "too dark"
+    purely from the erased image plus a ring/bubble-median reference color,
+    and that reliably false-positived on a real, different defect —
+    cv2.inpaint bleeding a few pixels of a bubble's own black outline
+    inward when a box's safety margin happens to reach the outline, even
+    though the box had zero real text-ink content to begin with. That
+    outline-bleed and genuine leftover glyph ink both look like "dark
+    pixels in the erased box" from the erased image alone; only the
+    ORIGINAL page can tell them apart. A pixel counts as residual smudge
+    only if it deviated from the region's reference tone in the ORIGINAL
+    (i.e. real content — ink or an outline sliver — was actually there)
+    AND still deviates after erase (i.e. it wasn't actually removed).
+    Pixels that are newly dark only in the erased output (inpaint's own
+    output artifacts) are deliberately not counted — a separate, real, but
+    much less common defect class not handled by this check.
+
+    Deviation is measured with abs(), so this catches both directions —
+    dark ink left on a light bubble AND light/white ink left un-erased on
+    a dark caption box (that class of box also exists — see
+    _region_is_flat_light's own note that flat-fill no longer requires
+    light backgrounds).
+
+    Reference tone: same bubble-interior sampling _detect_residual_smudge's
+    caller already has available via bubble_label_map (the connected-
+    component "flat + light" segmentation _find_bubble_components computes
+    for OCR merging — reused here rather than recomputed), falling back to
+    a ring around the box when the box doesn't fall inside any detected
+    bubble component (e.g. a caption box, which is deliberately excluded
+    from that light-only segmentation, or a manual Erase Tool box drawn
+    outside any auto-detected bubble).
+    """
+    h, w = erased_cv_img.shape[:2]
+    gray_new = cv2.cvtColor(erased_cv_img, cv2.COLOR_BGR2GRAY) if erased_cv_img.ndim == 3 else erased_cv_img
+    gray_old = cv2.cvtColor(orig_cv_img, cv2.COLOR_BGR2GRAY) if orig_cv_img.ndim == 3 else orig_cv_img
+
+    ref_val = None
+    if bubble_label_map is not None:
+        cy, cx = (y1 + y2) // 2, (x1 + x2) // 2
+        cy, cx = min(max(cy, 0), h - 1), min(max(cx, 0), w - 1)
+        label = bubble_label_map[cy, cx]
+        if label != 0:
+            bubble_mask = (bubble_label_map == label)
+            excl = np.zeros((h, w), dtype=bool)
+            m = 4
+            excl[max(0, y1 - m):min(h, y2 + m), max(0, x1 - m):min(w, x2 + m)] = True
+            ref_pixels = gray_new[bubble_mask & ~excl]
+            if ref_pixels.size >= 50:
+                ref_val = float(np.median(ref_pixels))
+    if ref_val is None:
+        ring = 12
+        rx1, ry1 = max(0, x1 - ring), max(0, y1 - ring)
+        rx2, ry2 = min(w, x2 + ring), min(h, y2 + ring)
+        crop = gray_new[ry1:ry2, rx1:rx2]
+        ring_mask = np.ones(crop.shape, dtype=bool)
+        iy1, iy2 = max(0, y1 - ry1), min(crop.shape[0], y2 - ry1)
+        ix1, ix2 = max(0, x1 - rx1), min(crop.shape[1], x2 - rx1)
+        ring_mask[iy1:iy2, ix1:ix2] = False
+        ring_px = crop[ring_mask]
+        ref_val = float(np.median(ring_px)) if ring_px.size else 255.0
+
+    new_interior = gray_new[y1:y2, x1:x2]
+    old_interior = gray_old[y1:y2, x1:x2]
+    if new_interior.size == 0:
+        return False, 0.0, 0
+
+    was_off_ref   = np.abs(old_interior.astype(np.int16) - ref_val) >= _SMUDGE_DARK_DELTA
+    still_off_ref = np.abs(new_interior.astype(np.int16) - ref_val) >= _SMUDGE_DARK_DELTA
+    residual_mask = (was_off_ref & still_off_ref).astype(np.uint8)
+
+    dark_fraction = float(np.mean(residual_mask))
+    largest_blob = 0
+    if residual_mask.any():
+        n, _, stats, _ = cv2.connectedComponentsWithStats(residual_mask, connectivity=8)
+        if n > 1:
+            largest_blob = int(stats[1:, cv2.CC_STAT_AREA].max())
+
+    is_smudged = (dark_fraction >= _SMUDGE_DARK_RATIO_THRESHOLD) or (largest_blob >= _SMUDGE_MIN_BLOB_PX)
+    return is_smudged, dark_fraction, largest_blob
+
+
+def _expand_box_to_glyph_extent(gray_orig: np.ndarray, x1: int, y1: int, x2: int, y2: int,
+                                 dark_floor: int = 200) -> tuple:
+    """Given a box that _detect_residual_smudge flagged, find how far the
+    text run it partially covers actually extends on the PRISTINE original
+    page, so the retry erase can cover it in one shot instead of chasing
+    leftover fragments across repeated passes (tried first — see this
+    feature's design notes: re-erasing only the same undersized box through
+    a different algorithm, or growing it by a fixed margin/percentage,
+    both left visible fragments in testing against a real undershoot case).
+
+    Method: threshold the original page for dark content, dilate it a
+    little horizontally (bridges the gap between adjacent letters in the
+    same word/line — most manga fonts leave a few px of whitespace between
+    glyphs, comfortably smaller than the gap between separate words or
+    unrelated dark content), then connected-label the dilated mask. Any
+    label the ORIGINAL box already overlaps is treated as "the same text
+    run this box was trying to cover" and the return box grows to fully
+    contain it. Labels the box doesn't touch (a bubble's outline three
+    words over, unrelated background art) are never pulled in, since nei-
+    ther touches the box being expanded — this is what keeps the expansion
+    targeted instead of ballooning toward every dark pixel on the page.
+
+    Falls back to a modest fixed-pixel grow (same shape as
+    _ERASE_SAFETY_MARGIN, just larger) if the box doesn't overlap any dark
+    label on the original at all — can happen for the outline-bleed case
+    _detect_residual_smudge's docstring describes, which reaches this
+    function only if it also happens to clear the dark-ratio/blob bar on
+    its own merits; a fixed grow is a reasonable, safe default when there's
+    no real glyph run to size the expansion against.
+
+    BOUNDED SEARCH WINDOW (fixes a confirmed runaway-expansion bug): the
+    connected-component search below is run against a crop centered on the
+    box, padded by _GLYPH_EXPAND_MAX_PX in every direction — NOT the whole
+    page. A real missed glyph run (ascender/descender/serif/short word
+    fragment right at a box's edge) never extends more than a few px past
+    a box that already mostly covered it, so this window is already very
+    generous for the legitimate case. Without this bound, connectedComponents
+    ran on the FULL page: manga panel borders and dense edge-to-edge line
+    art are routinely one single connected component spanning nearly the
+    entire page, so a box that merely touched one pixel of a border (a
+    bubble tail, a caption box, text near a panel edge — all common)
+    inherited that component's full page-spanning bounding box, and the
+    "retry" erase wiped almost the whole page. Cropping first means the
+    search can never see, and therefore can never claim, anything outside
+    the window — capping the worst-case growth structurally regardless of
+    how connected the rest of the page's art happens to be.
+    """
+    h, w = gray_orig.shape[:2]
+
+    m = _GLYPH_EXPAND_MAX_PX
+    wx1, wy1 = max(0, x1 - m), max(0, y1 - m)
+    wx2, wy2 = min(w, x2 + m), min(h, y2 + m)
+    window = gray_orig[wy1:wy2, wx1:wx2]
+
+    dark_full = (window < dark_floor).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 3))
+    dilated = cv2.dilate(dark_full, kernel)
+    _, labels = cv2.connectedComponents(dilated, connectivity=8)
+
+    # Box coords translated into window-local space for indexing labels/dark_full.
+    lx1, ly1 = x1 - wx1, y1 - wy1
+    lx2, ly2 = x2 - wx1, y2 - wy1
+
+    box_labels = set(np.unique(labels[ly1:ly2, lx1:lx2]).tolist()) - {0}
+    if not box_labels:
+        pad = 6
+        return (max(0, x1 - pad), max(0, y1 - pad), min(w, x2 + pad), min(h, y2 + pad))
+
+    extend_mask = np.isin(labels, list(box_labels)) & (dark_full > 0)
+    ys, xs = np.where(extend_mask)
+    # Translate back out of window-local space to full-page coords.
+    ex1, ey1 = int(xs.min()) + wx1, int(ys.min()) + wy1
+    ex2, ey2 = int(xs.max()) + 1 + wx1, int(ys.max()) + 1 + wy1
+
+    pad = 3
+    nx1 = max(0, min(x1, ex1) - pad)
+    ny1 = max(0, min(y1, ey1) - pad)
+    nx2 = min(w, max(x2, ex2) + pad)
+    ny2 = min(h, max(y2, ey2) + pad)
+    return (nx1, ny1, nx2, ny2)
+
+
+def _reerase_smudged_regions(orig_cv_img: np.ndarray, cv_img: np.ndarray,
+                              boxes_px: list, bubble_label_map=None) -> np.ndarray:
+    """Post-erase pass: checks every already-erased box for leftover ink
+    (_detect_residual_smudge) and, for any that still show real content,
+    widens that box to the missed glyph run's true extent
+    (_expand_box_to_glyph_extent) and re-erases just those widened boxes —
+    batched into one mask/one call the same way the first pass is, so a
+    page with several smudged regions still costs one extra inpaint call,
+    not one per region.
+
+    Always escalates to AI inpaint (LaMa) for the retry when it's
+    available, regardless of what erased the page the first time (classical
+    inpaint, flatten, or AI inpaint itself under a still-too-small box) —
+    a flagged region has already demonstrated the cheaper/faster method
+    wasn't enough, so this is exactly the "double check bubbles [for]
+    smudge, then hand the task to AI-inpaint" behavior this feature exists
+    for. Falls back to classical NS on the widened box when LaMa isn't
+    installed/available (_AiInpaintUnavailable) — a widened box through
+    classical inpaint is still very likely to succeed where the original
+    undersized box didn't, since covering the real glyph extent was the
+    actual fix in testing, not the choice of algorithm; AI inpaint is the
+    better retry when available, not the only thing that can work.
+
+    Mutates nothing in place; returns a new array. `cv_img` is the page
+    AFTER the first erase pass (what gets patched); `orig_cv_img` is the
+    untouched source page (what _detect_residual_smudge and
+    _expand_box_to_glyph_extent both need to tell real leftover content
+    apart from inpaint's own artifacts — see their docstrings).
+    """
+    gray_orig = cv2.cvtColor(orig_cv_img, cv2.COLOR_BGR2GRAY)
+    retry_boxes = []
+    for (x1, y1, x2, y2) in boxes_px:
+        is_smudged, _frac, _blob = _detect_residual_smudge(
+            orig_cv_img, cv_img, x1, y1, x2, y2, bubble_label_map)
+        if is_smudged:
+            retry_boxes.append(_expand_box_to_glyph_extent(gray_orig, x1, y1, x2, y2))
+
+    if not retry_boxes:
+        return cv_img
+
+    try:
+        # orig_cv_img: LaMa reconstructs from true source pixels, not the
+        # first pass's already-erased/gray-filled ones (see
+        # _erase_region_ai_inpaint's blend_base_img docstring). cv_img as
+        # blend_base_img: the feather-blend fallback outside the retry
+        # boxes must be the ALREADY-ERASED page, not the pristine original
+        # — otherwise every region that wasn't flagged as smudged reverts
+        # back to un-erased source text under the composite.
+        return _erase_region_ai_inpaint(orig_cv_img, retry_boxes, blend_base_img=cv_img)
+    except _AiInpaintUnavailable:
+        # Composite the classical retry over the existing (already-erased)
+        # cv_img rather than re-running from orig_cv_img wholesale — the
+        # rest of the page (regions that weren't smudged) is already
+        # correctly erased and shouldn't be touched a second time.
+        _ERASE_SAFETY_MARGIN = 2
+        h, w = cv_img.shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        for (x1, y1, x2, y2) in retry_boxes:
+            m = _ERASE_SAFETY_MARGIN
+            mask[max(0, y1 - m):min(h, y2 + m), max(0, x1 - m):min(w, x2 + m)] = 255
+        patched = cv2.inpaint(orig_cv_img, mask, inpaintRadius=7, flags=cv2.INPAINT_NS)
+        feather_px = 5
+        soft_mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=feather_px / 2)
+        alpha = (soft_mask.astype(np.float32) / 255.0)[..., None]
+        blended = patched.astype(np.float32) * alpha + cv_img.astype(np.float32) * (1 - alpha)
+        return blended.astype(np.uint8)
+
+
 def _region_text_color(pil_img: Image.Image, x1: int, y1: int, x2: int, y2: int) -> tuple:
     """Pick black or white text based on the erased region's own background
     brightness, instead of always drawing black. A hardcoded black looks
@@ -906,7 +1605,8 @@ def _fit_font_and_wrap(draw: "ImageDraw.ImageDraw", text: str, box_w: int, box_h
 
 def typeset_page(image_bytes: bytes, regions: list, erase_mode: str = "auto",
                   text_color="auto", skip_types: tuple = ("sfx",),
-                  erase_only: bool = False) -> bytes:
+                  erase_only: bool = False, ai_inpaint: bool = False,
+                  smudge_check: bool = True) -> bytes:
     """
     Core export function: erase original text and draw translations for one
     page. Returns PNG bytes.
@@ -916,8 +1616,23 @@ def typeset_page(image_bytes: bytes, regions: list, erase_mode: str = "auto",
     erase_mode: "auto" (default) routes each region individually — flat/
                 light regions (see _region_is_flat_light) skip straight to
                 the flatten fast path, everything else goes through the
-                full per-region NS/TELEA inpaint. "inpaint" and "flatten"
-                force that single method for every region on the page.
+                full per-region NS/TELEA inpaint (or LaMa — see ai_inpaint
+                below). "inpaint" and "flatten" force that single method for
+                every region on the page.
+    ai_inpaint: opt-in, default False. When True, whatever would have gone
+                through classical NS/TELEA inpaint (the non-flat-fill
+                boxes under "auto", or every box under "inpaint") is routed
+                to _erase_region_ai_inpaint (LaMa) instead of
+                _erase_region_inpaint. Does NOT change which boxes take the
+                flat-fill fast path under "auto" — flat/light regions are
+                already well-served by the cheap flood-fill regardless of
+                this flag, so this only affects the textured-region
+                minority where classical inpaint is weakest. First call
+                triggers a one-time model download and is meaningfully
+                slower per page than classical inpaint — see
+                _erase_region_ai_inpaint's docstring and the module-level
+                comment above it for real measured cost and an honest
+                caveat about unconfirmed quality-vs-classical claims.
     text_color: "auto" (default) picks black or white per-region based on
                 the erased region's own background brightness (see
                 _region_text_color) — handles dark caption/narration boxes
@@ -937,6 +1652,25 @@ def typeset_page(image_bytes: bytes, regions: list, erase_mode: str = "auto",
                 when this is True every region in `regions` is erased
                 regardless of its `tl`, and the draw-translation step below
                 is skipped entirely.
+    smudge_check: opt-out, default True. After the erase pass(es) above,
+                every region is re-checked against the PRISTINE source page
+                for leftover ink an undersized/misaligned box left behind
+                (see _detect_residual_smudge) — a real, observed failure
+                mode independent of erase_mode/ai_inpaint: a snug OCR or
+                manual box that undershoots real glyph extent (ascenders/
+                descenders/serifs at the edge, or text sitting close to a
+                bubble's own outline) can leave a dark smudge or a
+                recognizable leftover letter no matter which erase method
+                ran. Any flagged region gets its box widened to the missed
+                glyph run's real extent (_expand_box_to_glyph_extent) and
+                re-erased through AI inpaint (falling back to a stronger
+                classical pass if LaMa isn't installed) — see
+                _reerase_smudged_regions. Cheap when nothing is flagged
+                (pure numpy/cv2 comparison against pixels already in
+                memory, no model call) — the extra cost only shows up on
+                pages that actually need the retry. Exists as a parameter
+                mainly so callers/tests can turn it off to inspect a raw
+                first-pass erase without the second pass masking it.
     """
     pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     w, h = pil.size
@@ -953,6 +1687,12 @@ def typeset_page(image_bytes: bytes, regions: list, erase_mode: str = "auto",
         return buf.getvalue()
 
     boxes_px = [_region_box_px(r, w, h) for r in drawable]
+    _inpaint_fn = _erase_region_ai_inpaint if ai_inpaint else _erase_region_inpaint
+
+    # Pristine pre-erase page, kept around for smudge_check below — every
+    # erase branch overwrites `pil`/derives a `cv_img` from it, so this has
+    # to be captured before any of them run.
+    orig_cv_img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR) if smudge_check else None
 
     if erase_mode == "auto":
         # Per-region routing: flat/light regions (plain white/pale bubbles —
@@ -960,24 +1700,35 @@ def typeset_page(image_bytes: bytes, regions: list, erase_mode: str = "auto",
         # cheap flood-fill, since a full inpaint would just reconstruct flat
         # white anyway. Everything else (screentone, gradients, shaded
         # bubbles, dark caption boxes) still goes through the full inpaint
-        # pipeline below. This only changes *which* boxes reach cv2.inpaint,
-        # not how that step itself works.
+        # pipeline below — classical or LaMa depending on ai_inpaint. This
+        # only changes *which* boxes reach the inpaint step and *which*
+        # inpaint function they reach, not the flat-fill fast path itself.
         cv_img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
         flat_boxes, inpaint_boxes = [], []
         for box in boxes_px:
             (flat_boxes if _region_is_flat_light(cv_img, *box) else inpaint_boxes).append(box)
         if inpaint_boxes:
-            cv_img = _erase_region_inpaint(cv_img, inpaint_boxes)
+            cv_img = _inpaint_fn(cv_img, inpaint_boxes)
+        if flat_boxes:
             pil = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
-        for (x1, y1, x2, y2) in flat_boxes:
-            _erase_region_flatten(pil, x1, y1, x2, y2)
+            for (x1, y1, x2, y2) in flat_boxes:
+                _erase_region_flatten(pil, x1, y1, x2, y2)
+            cv_img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
     elif erase_mode == "inpaint":
         cv_img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-        cv_img = _erase_region_inpaint(cv_img, boxes_px)
-        pil = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+        cv_img = _inpaint_fn(cv_img, boxes_px)
     else:
+        cv_img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
         for (x1, y1, x2, y2) in boxes_px:
             _erase_region_flatten(pil, x1, y1, x2, y2)
+        cv_img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+
+    if smudge_check:
+        gray_orig = cv2.cvtColor(orig_cv_img, cv2.COLOR_BGR2GRAY)
+        bubble_label_map = _find_bubble_components(gray_orig, w, h)
+        cv_img = _reerase_smudged_regions(orig_cv_img, cv_img, boxes_px, bubble_label_map)
+
+    pil = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
 
     if erase_only:
         buf = io.BytesIO()
@@ -1128,7 +1879,8 @@ def _apply_paint_mask(pil_img: Image.Image, x1: int, y1: int, x2: int, y2: int,
 
 def typeset_manual_page(image_bytes: bytes, boxes: list, erase_mode: str = "auto",
                          text_color="auto", legend_layout: str = "below",
-                         font_path: str = "", font_size: int = 0) -> bytes:
+                         font_path: str = "", font_size: int = 0,
+                         ai_inpaint: bool = False) -> bytes:
     """
     Manual-Erase-Tool typeset: unlike typeset_page (which draws into every
     region the OCR pipeline found), this ONLY touches the exact boxes the
@@ -1185,6 +1937,9 @@ def typeset_manual_page(image_bytes: bytes, boxes: list, erase_mode: str = "auto
                 override the auto-fit's guess.
     legend_layout: "below" | "sidebar" | "both" — where flagged-outside
            translations get printed. Ignored if no box is flagged outside.
+    ai_inpaint: same meaning as typeset_page's — routes whatever would have
+           gone through classical NS/TELEA to LaMa instead. See
+           _erase_region_ai_inpaint's docstring for cost/quality caveats.
     """
     pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     w, h = pil.size
@@ -1227,19 +1982,20 @@ def typeset_manual_page(image_bytes: bytes, boxes: list, erase_mode: str = "auto
     ]
     if erase_targets:
         erase_boxes_px = [box for _, box in erase_targets]
+        _inpaint_fn = _erase_region_ai_inpaint if ai_inpaint else _erase_region_inpaint
         if erase_mode == "auto":
             cv_img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
             flat_boxes, inpaint_boxes = [], []
             for box in erase_boxes_px:
                 (flat_boxes if _region_is_flat_light(cv_img, *box) else inpaint_boxes).append(box)
             if inpaint_boxes:
-                cv_img = _erase_region_inpaint(cv_img, inpaint_boxes)
+                cv_img = _inpaint_fn(cv_img, inpaint_boxes)
                 pil = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
             for (x1, y1, x2, y2) in flat_boxes:
                 _erase_region_flatten(pil, x1, y1, x2, y2)
         elif erase_mode == "inpaint":
             cv_img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
-            cv_img = _erase_region_inpaint(cv_img, erase_boxes_px)
+            cv_img = _inpaint_fn(cv_img, erase_boxes_px)
             pil = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
         else:
             for (x1, y1, x2, y2) in erase_boxes_px:
@@ -1321,6 +2077,21 @@ _reader_events = {}   # tuple(langs) → threading.Event (set when load complete
 _reader_lock   = threading.Lock()
 _infer_lock    = threading.Lock()   # serialises PyTorch inference (not thread-safe)
 
+# RapidOCR: unlike EasyOCR, one shared engine instance covers every language
+# we've tested it against (es/pt/vi/tr all read correctly from the same
+# default-config engine — see Devlog "RapidOCR: second local OCR engine").
+# No per-language variants, so no keyed dict/event map needed — just a
+# single lazily-loaded singleton behind a lock.
+_rapidocr_engine = None
+_rapidocr_lock   = threading.Lock()
+_rapidocr_infer_lock = threading.Lock()   # serialises onnxruntime inference,
+                                           # matching _infer_lock's caution for
+                                           # EasyOCR even though onnxruntime is
+                                           # generally more thread-safe than
+                                           # raw PyTorch — costs nothing since
+                                           # OCR calls are already serialised
+                                           # per-page.
+
 def _get_reader(chapter_lang: str):
     import easyocr                # lazy — no import cost at startup
     langs = _easyocr_langs(chapter_lang)
@@ -1366,6 +2137,43 @@ def _get_reader(chapter_lang: str):
         evt.set()   # always unblock any waiters, even on failure
 
 
+def _get_rapidocr_engine():
+    """
+    Lazily load the single shared RapidOCR engine instance.
+
+    No chapter_lang parameter, unlike _get_reader() — RapidOCR's default
+    bundled model (PP-OCRv6, ~30 MB, ships inside the pip package itself)
+    already covers a single unified multi-language character set that
+    includes every language we've tested it against (es, pt, vi, tr, plus
+    en/ch). One instance serves all of them; there's nothing to key on.
+
+    This is *why* RapidOCR handled the language-mismatch test case (a
+    Portuguese page inside a chapter declared Spanish) with no accuracy
+    loss, while EasyOCR — bound to whatever language set _get_reader()
+    picked for the chapter — degraded on that page's SFX text. See Devlog
+    entry "RapidOCR: second local OCR engine" for the test that found this.
+
+    Languages RapidOCR's default model does NOT cover (ko, th, ar, ru/uk
+    Cyrillic, and others) would need an explicit per-language model fetch
+    from RapidOCR's own model catalog (hosted on modelscope.cn) — not
+    implemented here. Those languages already route to Gemini Vision via
+    VISION_LANGS regardless of which local engine is selected, so this
+    doesn't currently limit anything in practice; flagged here so it's not
+    a surprise if RapidOCR is ever pointed at a language outside that set.
+    """
+    global _rapidocr_engine
+    if _rapidocr_engine is not None:
+        return _rapidocr_engine
+    with _rapidocr_lock:
+        if _rapidocr_engine is None:
+            from rapidocr import RapidOCR
+            print("  [OCR] Loading RapidOCR engine (first run may download "
+                  "~30 MB)…")
+            _rapidocr_engine = RapidOCR()
+            print("  [OCR] RapidOCR ready.")
+    return _rapidocr_engine
+
+
 # ─── Gemini Vision OCR ───────────────────────────────────────────────────────
 
 _VISION_LANG_NAMES = {
@@ -1386,6 +2194,7 @@ _VISION_LANG_NAMES = {
     'en':    'English',
     'fr':    'French',
     'es':    'Spanish',
+    'es-la': 'Spanish (Latin American)',
     'de':    'German',
     'pt':    'Portuguese',
     'pt-br': 'Portuguese (Brazilian)',
@@ -1414,7 +2223,7 @@ def _ocr_gemini_vision(image_bytes: bytes, lang: str, key: str, model: str) -> t
     Send a manga page image to Gemini Vision and ask it to extract all text
     regions with approximate centre positions.
 
-    Returns: (regions, fallback_reason)
+    Returns: (regions, fallback_reason, usage)
       - regions        : list of dicts matching EasyOCR output schema
                          [{"text":"…","cx":45.2,"cy":23.1,"box":[x1%,y1%,x2%,y2%]}]
                          Empty list on any failure.
@@ -1424,6 +2233,14 @@ def _ocr_gemini_vision(image_bytes: bytes, lang: str, key: str, model: str) -> t
                          "network" — connection / timeout error
                          "parse"   — response arrived but JSON could not be parsed
                          "empty"   — Vision returned OK but found no text on page
+      - usage          : {"prompt_tokens", "completion_tokens", "total_tokens"}
+                         for the cost tracker (see cost-tracker.js), or None
+                         when no HTTP response was ever received (network/
+                         connection-level failures, or a non-2xx status —
+                         Gemini doesn't bill for those, so there's nothing to
+                         report). Present even on a "parse"/"empty" outcome,
+                         since Gemini still billed for a completed request in
+                         those cases even though we couldn't use the result.
     """
     import base64, json as _json, re as _re
 
@@ -1533,11 +2350,25 @@ def _ocr_gemini_vision(image_bytes: bytes, lang: str, key: str, model: str) -> t
                     f"  [Vision OCR] Rate-limited (429) — falling back to EasyOCR. "
                     f"Free tier quota may be exhausted."
                 )
-                return [], "quota"
+                return [], "quota", None
             else:
                 print(f"  [Vision OCR] Gemini error {r.status_code}: {r.text[:200]}")
-                return [], "error"
+                return [], "error", None
         gemini_resp = r.json()
+        # Usage IS meaningful even on a request that otherwise fails to parse
+        # below (a "parse"/"empty" outcome still consumed real input+output
+        # tokens — Gemini billed for them whether or not our regex found a
+        # usable JSON array in the response) — so grab it here, once, right
+        # after we have gemini_resp, and thread it through every return path
+        # below rather than only the success path.
+        usage_meta = gemini_resp.get("usageMetadata")
+        usage = None
+        if isinstance(usage_meta, dict):
+            usage = {
+                "prompt_tokens":     usage_meta.get("promptTokenCount", 0),
+                "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
+                "total_tokens":      usage_meta.get("totalTokenCount", 0),
+            }
         cand  = (gemini_resp.get("candidates") or [{}])[0]
         parts = cand.get("content", {}).get("parts", [])
         text = ""
@@ -1552,7 +2383,7 @@ def _ocr_gemini_vision(image_bytes: bytes, lang: str, key: str, model: str) -> t
         clean = text.replace("```json", "").replace("```", "").strip()
         match = _re.search(r"\[[\s\S]*\]", clean)
         if not match:
-            return [], "parse"
+            return [], "parse", usage
         items = _json.loads(match.group(0))
         out = []
         for item in items:
@@ -1732,18 +2563,21 @@ def _ocr_gemini_vision(image_bytes: bytes, lang: str, key: str, model: str) -> t
                             o["cx"] + 8.0, o["cy"] + 5.0]
 
         if not out:
-            return [], "empty"
-        return out, None
+            return [], "empty", usage
+        return out, None, usage
 
     except requests.exceptions.ConnectionError:
-        print(f"  [Vision OCR] Network error — falling back to EasyOCR")
-        return [], "network"
+        # Not "falling back to EasyOCR" — this function doesn't know which
+        # local engine is configured (no local_engine param here). ocr_page()
+        # logs the real engine name right after this returns.
+        print(f"  [Vision OCR] Network error — falling back to local OCR")
+        return [], "network", None
     except requests.exceptions.Timeout:
-        print(f"  [Vision OCR] Timeout — falling back to EasyOCR")
-        return [], "network"
+        print(f"  [Vision OCR] Timeout — falling back to local OCR")
+        return [], "network", None
     except Exception as e:
         print(f"  [Vision OCR] failed: {e}")
-        return [], "error"
+        return [], "error", None
 
 
 # ─── Panel border detection ───────────────────────────────────────────────────
@@ -2094,6 +2928,7 @@ def _merge_bubble_regions(
     min_conf:     float | None = None,
     clustered_floor: float     = 0.0,
     bubble_label_map            = None,
+    gray                        = None,
 ):
     """
     Group OCR bounding boxes that belong to the same speech bubble, then merge
@@ -2188,6 +3023,41 @@ def _merge_bubble_regions(
       constant that makes the default (1.0) actually bridge normal
       same-bubble line spacing.
 
+      LINE_GAP_FACTOR is a FIRST-PASS distance estimate only, not the
+      final word on whether two vertically-stacked fragments merge — it
+      decides which pairs are even considered (via expanded-box overlap).
+      For any pair that clears that bar, _profile_confirms_gap additionally
+      checks the real pixels in the gap band: a horizontal ink-density
+      profile that shows continuous ink (no whitespace valley) vetoes the
+      merge even though the fixed multiplier said "close enough". This
+      means a manga with unusually tight or loose leading is no longer
+      solely at the mercy of one global constant — LINE_GAP_FACTOR only
+      needs to be generous enough to admit true same-bubble pairs as
+      CANDIDATES; the profile check is what actually confirms or rejects
+      each one against that page's real spacing. The veto is one-directional
+      (can only block a distance-approved merge, never force one distance
+      would refuse) — see _profile_confirms_gap's docstring for why that's
+      the safe default when the profile itself is inconclusive.
+
+      HORIZONTAL_GAP_FACTOR (NEW) is the horizontal counterpart to
+      LINE_GAP_FACTOR — margin(i) is now actually TWO values per box,
+      margin_v(i) = height(i) x margin_scale x LINE_GAP_FACTOR and
+      margin_h(i) = height(i) x margin_scale x HORIZONTAL_GAP_FACTOR,
+      expanding each box by margin_v vertically and margin_h horizontally
+      rather than one shared value in every direction. HORIZONTAL_GAP_FACTOR
+      is deliberately much smaller than LINE_GAP_FACTOR: the only legitimate
+      same-bubble reason to bridge a horizontal gap is staggered/zigzag
+      lettering inside one narrow bubble, whose real gap is tight same-
+      bubble spacing, not line-height. Unlike the vertical case,
+      _profile_confirms_gap's ink-valley technique CANNOT do double duty
+      here as a secondary check — a clean gap reads identically whether
+      it's a normal word-space inside one bubble or open panel background
+      between two different bubbles — so horizontal reach has to stay
+      tight geometrically instead of leaning on a pixel-content veto to
+      catch mistakes after the fact. See the constant's own comment above
+      for the specific bug this fixes and its current (unvalidated)
+      starting value.
+
     Panel border guard (h_borders / v_borders):
       Even if two expanded boxes overlap, they will NOT be merged if a detected
       panel border line lies in the gap between them.  This prevents speech
@@ -2206,14 +3076,60 @@ def _merge_bubble_regions(
     # bubbles showed is normal line spacing, not an outlier.
     LINE_GAP_FACTOR = 1.6
 
-    is_webtoon = (img_h / max(img_w, 1)) > 2.0
-    eff_scale  = margin_scale * LINE_GAP_FACTOR * (0.6 if is_webtoon else 1.0)
+    # NEW — separate, tighter calibration for HORIZONTAL reach. See
+    # KNOWN_ISSUES_DRAFT.md, "Confirmed, blocking: _merge_bubble_regions
+    # over-merges adjacent bubbles on RapidOCR's fragment output" for the
+    # real-page bug this addresses.
+    #
+    # Until now, horizontal and vertical reach shared one LINE_GAP_FACTOR-
+    # derived margin. That's correct for genuine same-bubble LINE-to-LINE
+    # (vertical) gaps — what LINE_GAP_FACTOR was tuned against — but the
+    # only legitimate reason this function ever needs to bridge a HORIZONTAL
+    # gap is the "staggered lettering" pattern (two sub-columns of one
+    # sentence zigzagging down a single narrow bubble — see the stacked-pair
+    # comment below), and that pattern's real horizontal gap is tight
+    # same-bubble spacing, nothing like a full line-height. Reusing the
+    # line-spacing constant for horizontal reach meant it could ALSO bridge
+    # the real physical gap between two separate, adjacent bubbles —
+    # bubble-fill padding + border ink + the other bubble's own padding —
+    # which is exactly the confirmed RapidOCR bug. RapidOCR's smaller, more
+    # numerous fragments made this likelier to get hit in practice (more
+    # fragment pairs land near the boundary), but the underlying issue — one
+    # factor doing two jobs with different real-world scales — isn't
+    # engine-specific, so this fix applies to both engines' margins alike.
+    #
+    # NOTE: this is deliberately a GEOMETRIC fix, not a pixel-content one.
+    # The obvious first idea — reuse _profile_confirms_gap's ink-valley
+    # technique for horizontal gaps the way it already works for vertical
+    # ones — does NOT work here: a clean whitespace gap looks pixel-
+    # identical whether it's a normal word-space INSIDE one bubble or page/
+    # panel background BETWEEN two different adjacent bubbles. Ink density
+    # can't tell those apart; only the gap's SIZE relative to normal
+    # same-bubble spacing can, which is what this constant controls.
+    #
+    # UNVALIDATED STARTING VALUE — chosen conservatively small relative to
+    # LINE_GAP_FACTOR, not yet measured against real pages. Needs checking
+    # against (a) the RapidOCR Brazil_raw.jpg case (confirm the two bubbles
+    # no longer merge) and (b) a real staggered-lettering page (confirm that
+    # legitimate merge still succeeds) before this is trusted — same bar
+    # every other constant in this file is held to.
+    HORIZONTAL_GAP_FACTOR = 0.5
+
+    is_webtoon  = (img_h / max(img_w, 1)) > 2.0
+    eff_scale_v = margin_scale * LINE_GAP_FACTOR       * (0.6 if is_webtoon else 1.0)
+    eff_scale_h = margin_scale * HORIZONTAL_GAP_FACTOR * (0.6 if is_webtoon else 1.0)
 
     # Per-box margin: each box reaches only as far as its OWN height implies,
     # rather than every box on the page sharing one page-wide median-derived
-    # value. See docstring above for why this matters.
-    margins = [max(4, int((boxes[i][3] - boxes[i][1]) * eff_scale))
-               for i in range(len(boxes))]
+    # value. See docstring above for why this matters. Split into vertical/
+    # horizontal components (NEW) so the two directions use their own
+    # calibration; both still scale off the box's own HEIGHT in either case
+    # (not width) since height is what tracks font size / line spacing
+    # regardless of which direction reach is being measured in.
+    margins_v = [max(4, int((boxes[i][3] - boxes[i][1]) * eff_scale_v))
+                 for i in range(len(boxes))]
+    margins_h = [max(4, int((boxes[i][3] - boxes[i][1]) * eff_scale_h))
+                 for i in range(len(boxes))]
 
     # ── Union-Find ────────────────────────────────────────────────────────────
     n      = len(boxes)
@@ -2230,10 +3146,155 @@ def _merge_bubble_regions(
         if ra != rb:
             parent[ra] = rb
 
+    # Absolute ink/background thresholds — same convention as
+    # _find_panel_borders' cv2.threshold(gray, 50, ...): ink on a manga
+    # page is genuinely dark in absolute terms, not merely "darker than
+    # whatever this specific crop's own local noise floor happens to be".
+    # A THRESHOLD DERIVED FROM THE BAND'S OWN min/max (tried first, during
+    # development of this function) is unstable: a band of pure paper-grain
+    # noise with no real ink at all still spans a normal pixel range, and a
+    # midpoint- or percentile-based threshold splits that noise ~50/50,
+    # which reads as "every row is half-ink" — silently vetoing merges on
+    # perfectly ordinary blank gaps. An absolute threshold anchored to real
+    # page brightness conventions doesn't have this failure mode.
+    _GAP_INK_ABS_THRESH  = 100   # 0-255; darker than this counts as "ink" (normal polarity)
+    _GAP_BG_ABS_THRESH   = 155   # lighter than this counts as "ink" when polarity is inverted
+
+    def _profile_confirms_gap(gray, gap_box: tuple,
+                               frag_a_box: tuple, frag_b_box: tuple) -> bool | None:
+        """
+        Look at the actual ink in the page image between two candidate
+        same-bubble fragments and decide whether a real whitespace valley
+        separates them — a horizontal projection profile of the gap band,
+        not a box-distance heuristic.
+
+        This exists to replace a single global LINE_GAP_FACTOR (which
+        assumes one "normal" leading for every manga on every page) with a
+        per-gap, ground-truth check: does this SPECIFIC gap actually look
+        like the space between two lines of text, or is it dense enough
+        that it's more likely still inside one run of text (e.g. a
+        descender/ascender-heavy font, or two fragments of the same word
+        broken by OCR) — or bridged by something that isn't either
+        fragment's text at all (a stray mark, a panel-border sliver,
+        unrelated art between two DIFFERENT bubbles).
+
+        gap_box is the (x1,y1,x2,y2) band strictly between the two
+        fragments; frag_a_box/frag_b_box are the two ORIGINAL fragment
+        boxes themselves, used ONLY to sample polarity (see below) — never
+        for geometry.
+
+        THREE THINGS THIS GOT WRONG DURING DEVELOPMENT, kept here because
+        each is a real trap worth not re-falling into:
+
+        1. A threshold derived from the gap band's OWN min/max (tried
+           first) is unstable: a band of pure paper-grain noise with no
+           real ink at all still spans a normal pixel range, and a
+           midpoint- or percentile-based threshold splits that noise
+           ~50/50 — reading as "every row is half-ink" and vetoing merges
+           on perfectly ordinary blank gaps. Fixed by using a fixed
+           ABSOLUTE ink threshold instead (same convention as
+           _find_panel_borders' cv2.threshold(gray, 50, ...) — ink on a
+           manga page is genuinely dark/light in absolute terms).
+
+        2. Inferring polarity from the GAP BAND's own mean brightness
+           (tried second) conflates "this band is mostly dark because it's
+           mostly ink" with "this band has an inverted dark background" —
+           a densely-inked bridge (the exact case that should veto a
+           merge) has a low mean for the same reason an inverted-fill
+           bubble does, so it got misread as inverted polarity and the
+           dense ink was treated as background. Fixed by sampling polarity
+           from the FRAGMENT INTERIORS instead (frag_a_box/frag_b_box) —
+           we already know those contain real text, so their own bulk
+           brightness reveals the bubble's true fill/ink direction without
+           depending on how much ink happens to be in THIS gap, which is
+           exactly the unknown being measured.
+
+        3. Picking "whichever polarity produces fewer ink pixels" (tried
+           third, as a fix for #2) fails for the identical reason #2 did:
+           on a densely-inked bridge, the WRONG (inverted) polarity
+           produces fewer flagged pixels almost by construction, so
+           minority-class selection actively prefers the wrong reading
+           exactly when the right answer is "mostly ink, veto".
+
+        4. Even with correct polarity, a single full-width ink band in the
+           MIDDLE of an otherwise-clean gap (e.g. a stray screentone fleck,
+           a thin panel-border sliver that slipped past _find_panel_borders,
+           or real art between two unrelated bubbles) can leave a valley on
+           either side individually long enough to clear the length
+           threshold below — but a full-width bridge is itself conclusive
+           evidence the two fragments aren't connected by clean
+           whitespace, regardless of how much clear space flanks it. This
+           is checked explicitly, before the valley-length search, rather
+           than assumed to be ruled out by requiring one long run.
+
+        Returns:
+          True  — profile shows a clear low-ink valley spanning the gap,
+                  with no full-width bridge in it; genuine inter-line
+                  whitespace, merge is safe.
+          False — either a full-width ink bridge crosses the gap, or there's
+                  no valley run long enough to trust; merging on distance
+                  alone would be risky.
+          None  — inconclusive (gap too small/degenerate to profile, no
+                  usable fragment-polarity sample, or gray unavailable) —
+                  caller falls back to the existing distance-based margin,
+                  unchanged.
+
+        Deliberately conservative: only used to VETO a merge that pixel
+        distance would otherwise allow, never to force a merge that
+        distance-overlap didn't already produce.
+        """
+        if gray is None:
+            return None
+        gh, gw = gray.shape[:2]
+        gx1, gy1, gx2, gy2 = gap_box
+        bx1, by1 = max(0, min(int(gx1), gw - 1)), max(0, min(int(gy1), gh - 1))
+        bx2, by2 = max(0, min(int(gx2), gw)),     max(0, min(int(gy2), gh))
+        if bx2 - bx1 < 4 or by2 - by1 < 2:
+            return None  # band too thin/degenerate to profile meaningfully
+        band = gray[by1:by2, bx1:bx2]
+
+        def _frag_mean(box):
+            fx1, fy1, fx2, fy2 = (max(0, int(v)) for v in box)
+            fx2, fy2 = min(gw, fx2), min(gh, fy2)
+            if fx2 <= fx1 or fy2 <= fy1:
+                return None
+            return float(gray[fy1:fy2, fx1:fx2].mean())
+
+        frag_means = [m for m in (_frag_mean(frag_a_box), _frag_mean(frag_b_box)) if m is not None]
+        if not frag_means:
+            return None  # no usable polarity sample — inconclusive, don't veto
+        frag_mean = sum(frag_means) / len(frag_means)
+
+        # Polarity from the FRAGMENTS (known to contain real text), not
+        # the gap band itself — see point 2/3 above for why that distinction
+        # is load-bearing, not stylistic.
+        is_ink = (band < _GAP_INK_ABS_THRESH) if frag_mean >= 128 else (band > _GAP_BG_ABS_THRESH)
+        row_ink_frac = is_ink.mean(axis=1)
+
+        # Full-width bridge veto (point 4 above) — checked before the
+        # valley-length search, since it overrides a long valley on either
+        # side of it.
+        if (row_ink_frac > 0.6).any():
+            return False
+
+        # A genuine inter-line valley: at least one contiguous run of rows
+        # with near-zero ink spanning a real fraction of the band height —
+        # not just a single sparse row, which could be one thin serif/tail.
+        valley_rows = row_ink_frac < 0.04
+        if valley_rows.sum() == 0:
+            return False  # continuous ink the whole way through — no valley at all
+
+        best_run, cur_run = 0, 0
+        for is_valley_row in valley_rows:
+            cur_run = cur_run + 1 if is_valley_row else 0
+            best_run = max(best_run, cur_run)
+        band_h = by2 - by1
+        return (best_run / band_h) >= 0.25
+
     def expanded(i):
         x1, y1, x2, y2, _ = boxes[i]
-        m = margins[i]
-        return (x1 - m, y1 - m, x2 + m, y2 + m)
+        mv, mh = margins_v[i], margins_h[i]
+        return (x1 - mh, y1 - mv, x2 + mh, y2 + mv)
 
     def overlaps(a, b):
         ax1, ay1, ax2, ay2 = a
@@ -2250,11 +3311,80 @@ def _merge_bubble_regions(
                 # flat-light bubble components — see _crosses_bubble_boundary
                 # docstring. Both checks are independent vetoes over the
                 # same candidate merge; either one blocks it.
-                if (not _crosses_border(boxes[i][:4], boxes[j][:4],
-                                        h_borders, v_borders)
-                        and not _crosses_bubble_boundary(
+                if (_crosses_border(boxes[i][:4], boxes[j][:4],
+                                    h_borders, v_borders)
+                        or _crosses_bubble_boundary(
                             boxes[i][:4], boxes[j][:4], bubble_label_map)):
-                    union(i, j)
+                    continue
+
+                # Projection-profile veto: only meaningful for a
+                # vertically-stacked, genuinely SEPARATED pair (one box
+                # cleanly above the other with a real gap between them) —
+                # that's the case LINE_GAP_FACTOR's fixed multiplier was
+                # approximating with a single constant. Side-by-side
+                # fragments on the same line have no "inter-line gap" to
+                # profile, so skip those entirely rather than force a
+                # vertical-band reading onto a horizontal relationship.
+                #
+                # CRITICAL, found via testing against a real manga page
+                # (not synthetic data — see devlog/session notes): OCR line
+                # boxes commonly OVERLAP slightly in y even for genuinely
+                # separate, correctly-read lines — tight kerning, a
+                # descender/ascender, or a few degrees of page skew are
+                # enough. An earlier version of this check had no branch
+                # for that case: it always picked SOME pair of edges to
+                # treat as "the gap" (via sorted((ay2,by1)) vs
+                # sorted((by2,ay1))), and when the boxes overlapped, that
+                # produced a band spanning almost the FULL combined height
+                # of both boxes — including their actual text ink — rather
+                # than a real inter-line gap. The profile check then
+                # correctly found "continuous ink" in that band (because it
+                # WAS looking at real letters, not whitespace) and vetoed a
+                # merge that should have gone through, since there was
+                # never a real gap to evaluate. Confirmed on a real page:
+                # two lines of one sentence ("PASE DEL" / "PUESTO 188",
+                # y-ranges [1042,1079] and [1075,1111] — overlapping by 4px)
+                # got permanently split into separate regions this way.
+                #
+                # Fix: require ay2 <= by1 (or by2 <= ay1) — a genuine,
+                # non-overlapping vertical separation — before computing a
+                # gap band at all. Overlapping pairs skip the profile check
+                # entirely and fall through to the existing distance/border
+                # checks only, exactly matching behaviour from before this
+                # veto existed for the pairs where a "gap" reading was
+                # never a coherent question to ask in the first place.
+                ax1, ay1, ax2, ay2 = boxes[i][:4]
+                bx1, by1, bx2, by2 = boxes[j][:4]
+                stacked = (min(ax2, bx2) - max(ax1, bx1)) > 0  # meaningful x-overlap
+                a_above_b = ay2 <= by1
+                b_above_a = by2 <= ay1
+                if stacked and gray is not None and (a_above_b or b_above_a):
+                    gap_y1, gap_y2 = (ay2, by1) if a_above_b else (by2, ay1)
+                    gap_x1, gap_x2 = max(ax1, bx1), min(ax2, bx2)
+                    if gap_y2 > gap_y1:
+                        verdict = _profile_confirms_gap(
+                            gray, (gap_x1, gap_y1, gap_x2, gap_y2),
+                            boxes[i][:4], boxes[j][:4],
+                        )
+                        if verdict is False:
+                            # Continuous ink across the gap band, or a
+                            # full-width bridge inside it (see
+                            # _profile_confirms_gap docstring point 4) —
+                            # distance math said "close enough" but the
+                            # actual pixels show no clean line break here.
+                            # Note: we only ever reach this branch for
+                            # pairs that already passed overlaps(exp[i],
+                            # exp[j]) above, i.e. pairs within the
+                            # margin-expanded distance threshold — a gap
+                            # too large to plausibly be the same bubble
+                            # never reaches this profile check at all, so
+                            # there's no separate "is the gap small
+                            # enough" condition to enforce here; that
+                            # gating already happened via LINE_GAP_FACTOR
+                            # margins before this loop runs.
+                            continue
+
+                union(i, j)
 
     # ── Group by root ─────────────────────────────────────────────────────────
     groups: dict = {}
@@ -2368,6 +3498,7 @@ def _merge_bubble_regions(
 
         return (left, right)
 
+
     # ── Merge each group ──────────────────────────────────────────────────────
     regions      = []
     group_raw_ids = []   # parallel list: raw box indices per merged region
@@ -2476,6 +3607,108 @@ def _merge_bubble_regions(
     return regions, group_raw_ids
 
 
+def _easyocr_readtext_primary(reader, arr, lang: str):
+    """
+    Run EasyOCR's primary (non-fallback) readtext pass and do the one piece
+    of confidence filtering that's identical between both call sites:
+    dropping empty strings and the short-word (<=2 char) carve-out.
+
+    Shared by _run_easyocr_detection (the main per-page pipeline) and the
+    /ocr-crop route (correction UI's single-region redraw) — these two used
+    to hand-duplicate the exact same readtext() parameters and short-word
+    threshold, which could silently drift out of sync if one were tuned
+    without the other.
+
+    Deliberately NOT shared:
+      - The zero-box raw-image retry fallback (see _run_easyocr_detection
+        step 4b). That's a page-level heuristic — "we found nothing at all
+        on a whole manga page, preprocessing probably hurt us, try again on
+        the raw image." It doesn't obviously apply to /ocr-crop, where a
+        user hand-drew one small box and a genuinely empty result (e.g. an
+        SFX box that's actually blank) is a normal, non-suspicious outcome,
+        not evidence preprocessing failed. Forcing that retry onto every
+        single-box correction crop would be a behavior change, not a
+        refactor, so it stays main-pipeline-only.
+      - Cluster-aware confidence filtering (_merge_bubble_regions' min_conf
+        deferral). /ocr-crop has no merge step — a crop is already one
+        region — so there's nothing to defer filtering to; it applies
+        min_conf directly instead. That's an inherent shape difference
+        between "OCR one page, then cluster fragments into bubbles" and
+        "OCR one already-known bubble," not accidental duplication.
+
+    Returns:
+        (fragments, confidences) — parallel lists. fragments is a list of
+        (bbox, text) tuples where bbox is EasyOCR's raw four-corner box
+        ([[x1,y1],[x2,y1],[x2,y2],[x1,y2]]) and text is already .strip()'d;
+        confidences are EasyOCR's raw per-fragment scores. Callers apply
+        their own min_conf floor on top of this (they differ deliberately
+        — see above).
+    """
+    raw = reader.readtext(
+        arr,
+        detail=1,
+        paragraph=False,
+        contrast_ths=0.1,    # default 0.1 — explicit for clarity
+        adjust_contrast=0.5, # auto-boost low-contrast text regions
+        text_threshold=0.6,  # slightly more permissive than default 0.7
+        min_size=10,         # ignore sub-pixel noise detections
+    )
+    fragments, confidences = [], []
+    for bbox, text, conf in raw:
+        text = text.strip()
+        if not text:
+            continue
+        if len(text) <= 2 and conf < SHORT_WORD_MIN_CONF:
+            continue
+        fragments.append((bbox, text))
+        confidences.append(conf)
+    return fragments, confidences
+
+
+def _rapidocr_readtext_primary(engine, arr, lang: str):
+    """
+    RapidOCR counterpart to _easyocr_readtext_primary() — same contract,
+    same short-word carve-out, so _run_rapidocr_detection can hand its
+    output to the exact same _merge_bubble_regions() call EasyOCR uses.
+
+    RapidOCR's call/return shape is genuinely different from EasyOCR's
+    (engine(arr) -> object with .boxes/.txts/.scores, vs.
+    reader.readtext(arr, **tuned_kwargs) -> list of (bbox, text, conf)
+    tuples) — there is no equivalent to EasyOCR's contrast_ths /
+    adjust_contrast / text_threshold / min_size knobs to pass through here;
+    RapidOCR's own detector (DBNet-based, vs. EasyOCR's CRAFT) has a
+    different tunable set entirely (box_thresh / unclip_ratio) that we are
+    NOT tuning yet — this call uses RapidOCR's library defaults. Revisit
+    once the real eval script (see Devlog) has enough data to tune against,
+    same as EasyOCR's current thresholds were tuned against real pages
+    rather than guessed.
+
+    Returns:
+        (fragments, confidences) — same shape as _easyocr_readtext_primary:
+        fragments is [(bbox, text), …] with bbox as EasyOCR's four-corner
+        convention ([[x1,y1],[x2,y1],[x2,y2],[x1,y2]]) so downstream box
+        math (_run_easyocr_detection's box-building step) works unchanged
+        for either engine.
+    """
+    result = engine(arr)
+    fragments, confidences = [], []
+    if result.boxes is None:
+        return fragments, confidences
+    for box, text, conf in zip(result.boxes, result.txts, result.scores):
+        text = (text or "").strip()
+        if not text:
+            continue
+        if len(text) <= 2 and conf < SHORT_WORD_MIN_CONF:
+            continue
+        # box is a (4,2) array in the same corner order EasyOCR uses —
+        # convert to the same nested-list shape so callers don't need to
+        # know which engine produced it.
+        bbox = [[float(x), float(y)] for x, y in box]
+        fragments.append((bbox, text))
+        confidences.append(float(conf))
+    return fragments, confidences
+
+
 def _run_easyocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
     """
     Run the full EasyOCR detection + bubble-merge pipeline on a page image.
@@ -2525,53 +3758,25 @@ def _run_easyocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
     try:
         reader = _get_reader(lang)
         with _infer_lock:
-            raw = reader.readtext(
-                arr,
-                detail=1,
-                paragraph=False,
-                contrast_ths=0.1,    # default 0.1 — explicit for clarity
-                adjust_contrast=0.5, # auto-boost low-contrast text regions
-                text_threshold=0.6,  # slightly more permissive than default 0.7
-                min_size=10,         # ignore sub-pixel noise detections
-            )
+            fragments, frag_confidences = _easyocr_readtext_primary(reader, arr, lang)
     except Exception as e:
         abort(500, f"OCR failed: {e}")
 
-    # 4. Build the candidate box list. Per-language min_conf and the
-    #    short-word carve-out (below) still apply, but ordinary confidence
-    #    rejection is now DEFERRED to _merge_bubble_regions rather than
-    #    done here — see that function's "Confidence-aware filtering"
-    #    docstring section for why: a low-confidence fragment that's
-    #    spatially adjacent to (and would merge with) confident neighbours
-    #    is much more likely to be real text than an isolated one, and only
-    #    _merge_bubble_regions knows which fragments are adjacent. Filtering
-    #    here, before clustering happens, can't tell the two cases apart.
-    #
-    #    SHORT_WORD_MIN_CONF is still applied here (not deferred): it's a
-    #    separate, narrower carve-out for very short fragments (<=2
-    #    characters after stripping). Verified against real EasyOCR output:
-    #    standalone short function words that are entirely legitimate ("A"
-    #    as in Spanish/Hungarian "a/the", French "a" as in "has") scored as
-    #    low as 0.155-0.156 confidence — well below the default 0.35 floor —
-    #    and were being silently discarded, truncating the start of
-    #    otherwise-correct sentences. A short fragment is inherently harder
-    #    for the recognition model to score confidently (little surrounding
-    #    context to disambiguate), so low confidence alone isn't as strong a
-    #    noise signal for short text as it is for longer text. This one
-    #    stays a hard floor (not cluster-deferred) because a stray 1-2
-    #    character noise blob sitting near real text is a real risk the
-    #    cluster-adjacency trust signal doesn't protect against the same way
-    #    it does for longer, more distinctive fragments.
-    SHORT_WORD_MIN_CONF = 0.12
+    # 4. Build the candidate box list. Per-language min_conf is applied
+    #    below via _merge_bubble_regions rather than here — see that
+    #    function's "Confidence-aware filtering" docstring section for why:
+    #    a low-confidence fragment that's spatially adjacent to (and would
+    #    merge with) confident neighbours is much more likely to be real
+    #    text than an isolated one, and only _merge_bubble_regions knows
+    #    which fragments are adjacent. Filtering here, before clustering
+    #    happens, can't tell the two cases apart. (The short-word carve-out
+    #    is already applied — as a hard floor, not deferred — inside
+    #    _easyocr_readtext_primary; see SHORT_WORD_MIN_CONF's module-level
+    #    comment for why that one stays undeferred.)
     min_conf = _MIN_CONF_MAP.get(lang, 0.35)
     boxes = []          # each entry: (x1, y1, x2, y2, text)
     confidences = []    # parallel to boxes — see _merge_bubble_regions docstring
-    for bbox, text, conf in raw:
-        text = text.strip()
-        if not text:
-            continue
-        if len(text) <= 2 and conf < SHORT_WORD_MIN_CONF:
-            continue
+    for (bbox, text), conf in zip(fragments, frag_confidences):
         # bbox: [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
         xs = [p[0] for p in bbox]
         ys = [p[1] for p in bbox]
@@ -2634,6 +3839,11 @@ def _run_easyocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
         boxes, w, h, h_borders, v_borders, margin_scale,
         confidences=confidences, min_conf=min_conf, clustered_floor=SHORT_WORD_MIN_CONF,
         bubble_label_map=bubble_label_map,
+        # Same pre-CLAHE grayscale used for border/bubble detection above —
+        # projection profiling needs real ink density, which CLAHE's
+        # contrast remapping would distort just like it would the other
+        # two signals (see the comment on gray_orig's first use).
+        gray=gray_orig,
     )
 
     # 7. Attach raw_box_ids so the frontend knows which raw fragments
@@ -2654,6 +3864,185 @@ def _run_easyocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
     return regions, raw_boxes_out, h_borders_pct, v_borders_pct
 
 
+def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
+    """
+    RapidOCR counterpart to _run_easyocr_detection() — identical shape,
+    identical return contract, and reuses every shared helper that function
+    uses (_find_panel_borders, _find_bubble_components, _preprocess_for_ocr,
+    _merge_bubble_regions). Only step 3 (the actual OCR call) and its
+    zero-box retry differ, because those are the only genuinely
+    engine-specific pieces of the pipeline — see _rapidocr_readtext_primary
+    for why the two engines' raw calling conventions don't unify further
+    than this.
+
+    Why this exists as a second, mostly-parallel function instead of one
+    shared function with an engine parameter: this file's own precedent
+    already does it this way — _easyocr_readtext_primary's docstring notes
+    it's shared between this function and /ocr-crop, while each of *those*
+    keeps its own orchestration. Two engine-specific top-level pipelines
+    sharing small primitives is the established pattern here, not a new one.
+
+    Tested (see Devlog "RapidOCR: second local OCR engine") on real
+    Spanish/Portuguese/Vietnamese/Turkish manga pages: faster and lighter
+    than EasyOCR across the board, more accurate on Portuguese, clearly
+    *less* accurate on Vietnamese (systematic diacritic corruption that its
+    own confidence score does not flag), and — unlike EasyOCR — unaffected
+    by a page's language not matching the chapter's declared language,
+    since _get_rapidocr_engine() doesn't key on language at all. None of
+    that is encoded as a hard rule inside this function; see
+    _recommend_local_engine() for the (currently provisional, single-page
+    per language) per-language guidance surfaced to the user instead of
+    baked into routing here.
+
+    Returns: identical shape to _run_easyocr_detection — (regions,
+    raw_boxes_out, h_borders_pct, v_borders_pct).
+    """
+    # 1-2c. Decode + panel/bubble detection + CLAHE preprocess — byte-for-byte
+    # the same steps _run_easyocr_detection uses, since none of this is
+    # EasyOCR-specific. Duplicated here rather than factored into a shared
+    # helper for this first pass — see build note in Devlog for the planned
+    # follow-up if a third engine ever gets added.
+    try:
+        pil  = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        w, h = pil.size
+        arr  = np.array(pil)
+    except Exception as e:
+        abort(422, f"Image decode error: {e}")
+
+    gray_orig             = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    h_borders, v_borders  = _find_panel_borders(gray_orig, w, h)
+    bubble_label_map      = _find_bubble_components(gray_orig, w, h)
+    arr = _preprocess_for_ocr(arr)
+
+    # 3. OCR (serialised — see _rapidocr_infer_lock's comment on why we're
+    #    cautious here even though onnxruntime is more thread-safe than
+    #    PyTorch)
+    try:
+        engine = _get_rapidocr_engine()
+        with _rapidocr_infer_lock:
+            fragments, frag_confidences = _rapidocr_readtext_primary(engine, arr, lang)
+    except Exception as e:
+        abort(500, f"OCR failed: {e}")
+
+    min_conf = _MIN_CONF_MAP.get(lang, 0.35)
+    boxes = []
+    confidences = []
+    for (bbox, text), conf in zip(fragments, frag_confidences):
+        xs = [p[0] for p in bbox]
+        ys = [p[1] for p in bbox]
+        boxes.append((min(xs), min(ys), max(xs), max(ys), text))
+        confidences.append(conf)
+
+    # 4b. Zero-box retry — same rationale as _run_easyocr_detection's
+    #     (preprocessing may have hurt rather than helped), but RapidOCR has
+    #     no equivalent to EasyOCR's contrast_ths/text_threshold retry knobs,
+    #     so this just re-runs on the raw, unpreprocessed image with a
+    #     slightly relaxed min_conf floor — same shape of relaxation
+    #     (max(min_conf - 0.05, 0.20)) as the EasyOCR path, for consistency.
+    if len(boxes) == 0:
+        print(f"  [OCR] RapidOCR: zero boxes from preprocessed image — "
+              f"retrying on raw (lang={lang})")
+        try:
+            arr_raw = np.array(pil)
+            with _rapidocr_infer_lock:
+                fragments2, conf2 = _rapidocr_readtext_primary(engine, arr_raw, lang)
+            floor = max(min_conf - 0.05, 0.20)
+            for (bbox, text), conf in zip(fragments2, conf2):
+                if conf < floor:
+                    continue
+                xs = [p[0] for p in bbox]
+                ys = [p[1] for p in bbox]
+                boxes.append((min(xs), min(ys), max(xs), max(ys), text))
+                confidences.append(conf)
+            if boxes:
+                print(f"  [OCR] RapidOCR raw fallback recovered {len(boxes)} box(es)")
+        except Exception as e:
+            print(f"  [OCR] RapidOCR raw fallback failed: {e}")
+
+    # 5-7. Raw box output, bubble merge, raw_box_ids, border percentages —
+    # identical to _run_easyocr_detection from here on.
+    raw_boxes_out = [
+        {
+            "id":  idx,
+            "text": b[4],
+            "box": [
+                round(b[0] / w * 100, 1), round(b[1] / h * 100, 1),
+                round(b[2] / w * 100, 1), round(b[3] / h * 100, 1),
+            ],
+            "px":  [int(b[0]), int(b[1]), int(b[2]), int(b[3])],
+        }
+        for idx, b in enumerate(boxes)
+    ]
+
+    regions, group_raw_ids = _merge_bubble_regions(
+        boxes, w, h, h_borders, v_borders, margin_scale,
+        confidences=confidences, min_conf=min_conf, clustered_floor=SHORT_WORD_MIN_CONF,
+        bubble_label_map=bubble_label_map,
+        gray=gray_orig,
+    )
+    for region, raw_ids in zip(regions, group_raw_ids):
+        region["raw_box_ids"] = raw_ids
+
+    h_borders_pct = [round(y / h * 100, 1) for y in h_borders]
+    v_borders_pct = [round(x / w * 100, 1) for x in v_borders]
+
+    return regions, raw_boxes_out, h_borders_pct, v_borders_pct
+
+
+# Provisional per-language local-engine guidance — NOT a hard routing rule.
+# Based on one real manga page per language (es/pt/vi/tr), tested manually
+# in one session — see Devlog "RapidOCR: second local OCR engine" for the
+# actual transcriptions this is based on. This is a starting point to
+# surface as a *suggestion* the user can accept or dismiss (see
+# _recommend_local_engine below and the frontend banner it powers), not a
+# conclusion strong enough to hard-code as automatic routing the way
+# VISION_LANGS is. Replace this dict's contents once the planned eval
+# script (run across a real folder of sample pages per language, not one
+# page each) produces real accept/drop/accuracy numbers — see Devlog.
+_LOCAL_ENGINE_RECOMMENDATION = {
+    # lang: (recommended_engine, one-line reason shown in the UI banner)
+    'vi': ('easyocr',  "RapidOCR tends to drop or swap Vietnamese tone marks "
+                        "on stacked diacritics; EasyOCR is more reliable here."),
+    'pt': ('rapidocr', "RapidOCR was more accurate and complete on Portuguese "
+                        "in our testing; EasyOCR's own confidence filter "
+                        "dropped some correctly-read lines."),
+    'ko': ('easyocr',  "RapidOCR's bundled model doesn't cover Korean at all "
+                        "(unlike Vietnamese, this isn't an accuracy gap — it's "
+                        "no coverage) and returns unusable output. This is a "
+                        "harder rule than the others: Korean already routes to "
+                        "Vision by default (see VISION_LANGS), but if Vision "
+                        "ever falls back, the local fallback must be EasyOCR."),
+    # id: RapidOCR read a real Indonesian page cleanly (correct on 'AKU',
+    # 'KALAU', 'ITU', 'NUANSA'); EasyOCR on the same page introduced a
+    # systematic U-misread-as-L/V across most of those same words, but
+    # separately got 2-3 isolated harder words right that RapidOCR
+    # scrambled ('HOBI', 'kece-plosan'). Leaning RapidOCR but not codified
+    # as a recommendation yet — one page isn't enough to call this the way
+    # Korean's near-total failure was an obvious call. Worth another page
+    # or two before adding an entry here.
+    #
+    # es, tr, and everything else not listed: too close to call on the
+    # sample tested so far — no recommendation is surfaced (see
+    # _recommend_local_engine).
+}
+
+def _recommend_local_engine(lang: str, current: str):
+    """
+    Returns (recommended_engine, reason) if there's a real recommendation
+    for `lang` AND it differs from what the user currently has selected,
+    else None. None means "don't show the banner" — either because we have
+    no data for this language yet, or because the user is already on the
+    recommended engine.
+    """
+    rec = _LOCAL_ENGINE_RECOMMENDATION.get(lang)
+    if rec is None:
+        return None
+    engine, reason = rec
+    if engine == current:
+        return None
+    return engine, reason
+
+
 def _normalize_for_match(s: str) -> str:
     """
     Reduce OCR'd text to a bare lowercase alphanumeric string with no
@@ -2671,6 +4060,104 @@ def _normalize_for_match(s: str) -> str:
     s = unicodedata.normalize('NFKD', s or "")
     s = ''.join(c for c in s if not unicodedata.combining(c))
     return _re2.sub(r'[^a-z0-9]+', '', s.lower())
+
+
+def _rescue_orphaned_vision_regions(vision_regions: list, matched_indices: set,
+                                     pil_img: "Image.Image", lang: str,
+                                     ai_key: str, ai_model: str,
+                                     max_rescues: int = 4) -> dict:
+    """
+    Automatic micro-crop rescue for Vision items that _match_vision_to_easyocr
+    couldn't pair with an EasyOCR box (fuzzy text ratio < 0.45, or no
+    EasyOCR boxes at all). These are disproportionately the hardest items
+    on the page: the text most likely to need Vision's help in the first
+    place (stylised fonts, vertical text, scripts EasyOCR reads poorly) is
+    also the text most likely to score a low fuzzy-match ratio against
+    EasyOCR's own (noisy) read of the same bubble — so it's exactly the
+    population left with Vision's own batch-level rescaled coordinates,
+    which is the least-trustworthy coordinate source in the whole pipeline.
+
+    This does NOT try to fix the position via spatial/IoU proximity —
+    matching an orphaned box to a nearby EasyOCR box by distance alone
+    risks pairing wrong on dense pages (see the discussion this followed:
+    "upper right" isn't unique on a 6-panel grid). Instead it re-crops the
+    ORIGINAL full-resolution image at Vision's own bounding box for that
+    item and fires a second, focused Gemini call scoped to just that
+    region — cheap (small crop, maxOutputTokens=512, same call shape as
+    the correction UI's manual VISION draw) and sidesteps coordinate
+    reconciliation entirely for this item: whatever text comes back
+    replaces the original, but the BOX stays exactly what Vision already
+    reported (rescue only ever improves text — see below for why it
+    doesn't touch position).
+
+    Deliberately conservative:
+      - Capped at max_rescues per page (default 4) — a page with many
+        orphaned items is more likely mis-detected at a structural level
+        (wrong language selected, garbage image) than one where a burst
+        of extra API calls will individually fix each item; this caps
+        both latency and API spend for that degenerate case.
+      - Only fires on items whose box has a plausible area (skips anything
+        that collapsed to near-zero width/height — almost certainly a
+        garbage box, not worth spending a call on).
+      - Does NOT touch box/cx/cy — only vision_regions[i]["text"]. Position
+        for orphaned items already comes from _ocr_gemini_vision's own
+        normalization+fallback heuristics (see that function), which is a
+        real, reasoned estimate; a second Gemini call reading a small crop
+        has no better claim on THIS item's absolute page position than the
+        first one did — it wasn't asked for coordinates at all, only text.
+        Fixing text without touching a possibly-already-decent position is
+        a strictly additive change; touching position here would just be
+        substituting one guess for another with no verification either way.
+      - Silently keeps the original text if a rescue call fails or returns
+        empty — never surfaces a rescue failure as a page-level OCR error,
+        since the item already has SOME text (Vision's original read) to
+        fall back to; this is best-effort improvement, not a new failure
+        mode for the page.
+
+    Returns {"rescued": n, "attempted": n} for logging/telemetry — doesn't
+    mutate raw_boxes_out since it never changes which raw fragments a
+    region maps to, only the text already at vision_regions[i]["text"].
+    """
+    orphans = [
+        vi for vi in range(len(vision_regions))
+        if vi not in matched_indices
+    ]
+    if not orphans or not ai_key:
+        return {"rescued": 0, "attempted": 0}
+
+    iw, ih = pil_img.size
+    rescued = 0
+    attempted = 0
+    for vi in orphans[:max_rescues]:
+        vr = vision_regions[vi]
+        box_pct = vr.get("box")
+        if not box_pct or len(box_pct) != 4:
+            continue
+        x1 = box_pct[0] / 100.0 * iw
+        y1 = box_pct[1] / 100.0 * ih
+        x2 = box_pct[2] / 100.0 * iw
+        y2 = box_pct[3] / 100.0 * ih
+        if (x2 - x1) < 6 or (y2 - y1) < 6:
+            continue  # collapsed/garbage box — not worth a call
+
+        attempted += 1
+        try:
+            text, usage = _gemini_crop_ocr_core(pil_img, (x1, y1, x2, y2), lang, ai_key, ai_model)
+        except _VisionCropError as e:
+            print(f"  [OCR] Micro-crop rescue failed for orphan #{vi} "
+                  f"(keeping original text): {e.message}")
+            continue
+
+        if text and text.strip():
+            print(f"  [OCR] Micro-crop rescue: orphan #{vi} "
+                  f"'{vr.get('text','')[:20]}' → '{text[:20]}'")
+            vr["text"] = text.strip()
+            rescued += 1
+        # else: Gemini's second look also found nothing usable — keep the
+        # original text rather than blanking a field that already had a
+        # (possibly correct) value.
+
+    return {"rescued": rescued, "attempted": attempted}
 
 
 def _match_vision_to_easyocr(vision_regions: list, easy_regions: list,
@@ -2701,7 +4188,11 @@ def _match_vision_to_easyocr(vision_regions: list, easy_regions: list,
     unmatched vision regions get a synthetic raw_box entry appended so the
     frontend's split-correction tool still has something to index into.
 
-    Returns (matched_count, total_vision_count) for logging.
+    Returns (matched_count, total_vision_count, matched_vision_indices).
+    The third value is the set of vision_regions indices that got an
+    EasyOCR position match — callers needing to know which items are
+    "orphaned" (e.g. the micro-crop rescue pass in /ocr) use this directly
+    instead of recomputing the same fuzzy match a second time.
     """
     import difflib
 
@@ -2766,7 +4257,10 @@ def _match_vision_to_easyocr(vision_regions: list, easy_regions: list,
         })
         vr["raw_box_ids"] = [new_id]
 
-    return len(used_v), total
+    # used_v (the set of matched vision indices) is returned alongside the
+    # counts so callers — specifically the micro-crop rescue pass — can
+    # identify orphaned items without re-running the fuzzy match.
+    return len(used_v), total, used_v
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -2786,6 +4280,44 @@ def list_fonts():
     server-side against this same list before ever reaching
     ImageFont.truetype (see export_page)."""
     return jsonify({"fonts": _discover_system_fonts()})
+
+
+# Populated by build.py in the single-file dist build (see get_rates() below);
+# empty in the normal split server.py + static/ layout, where rates.json on
+# disk is always the real source and this fallback never triggers.
+_RATES_DEFAULT = {}
+
+
+@app.route("/rates")
+def get_rates():
+    """Serve rates.json (the editable $/1M-token table the cost tracker
+    uses to turn usage into a dollar figure — see rates.json's own header
+    comment for the full rationale). Read from disk on every request
+    rather than cached at import time, same reasoning as index() below:
+    editing rates.json takes effect on a normal page refresh, no server
+    restart needed, which matters here specifically because this file is
+    meant to be hand-edited when a provider changes prices.
+
+    Split layout (server.py + static/): rates.json always exists on disk
+    next to server.py — this is the only path that ever runs.
+
+    Single-file dist build (dist/MangaTL-Reader.py): _RATES_DEFAULT is a
+    non-empty dict baked in by build.py at build time (same technique as
+    the _HTML constant below), so the dist build works out of the box with
+    no separate rates.json to lose track of. But the disk file still wins
+    if the person running the dist build drops a rates.json next to it —
+    same "editable without touching code" promise either way, the dist
+    build just also has a working fallback if they never do that.
+    """
+    import json as _json
+    rates_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rates.json")
+    try:
+        with open(rates_path, "r", encoding="utf-8") as f:
+            return jsonify(_json.load(f))
+    except (OSError, ValueError) as e:
+        if _RATES_DEFAULT:
+            return jsonify(_RATES_DEFAULT)
+        abort(404, f"rates.json unavailable ({e}); cost tracker will use estimates only.")
 
 
 # Suppress browser's automatic favicon.ico request. There's no favicon.ico
@@ -2994,13 +4526,51 @@ def _translate_deepseek(api_key: str, payload: dict, rescue_key: str = "translat
                 # A thinking model sometimes writes its final answer inside the
                 # reasoning chain when it runs out of output budget — rescue it here.
                 #
-                # Strategy A (primary): rfind the last "translations" key, walk back
-                # to the opening brace, then parse with json.loads.  This correctly
-                # handles nested objects like {"model":{"name":"x"},"translations":[...]}
-                # that the regex below would choke on due to its [^{}]*? guard.
+                # Strategy A (primary): find the JSON object that actually
+                # ENCLOSES the "translations" key, then parse it with json.loads.
+                #
+                # FIX (was: KNOWN_ISSUES_DRAFT.md "DeepSeek rescue Strategy A:
+                # doesn't handle a nested object before the key") — a single
+                # rc.rfind('{', 0, idx) finds the NEAREST '{' before the key,
+                # which is wrong whenever a nested object sits between the true
+                # enclosing brace and the key itself (e.g.
+                # {"model":{"name":"x"},"translations":[...]}  — the naive
+                # rfind grabs {"name":"x"}'s brace, not the outer one, and
+                # json.loads then chokes on the dangling trailing content).
+                # Reproduced directly against this exact shape before this fix
+                # landed; see KNOWN_ISSUES_DRAFT.md for the full trace.
+                #
+                # Correct approach: walk backward from the key counting brace
+                # depth (each '}' seen while scanning right-to-left means we've
+                # entered one more nested level we need to close before we're
+                # back at our own enclosing level; each '{' either closes one
+                # of those nested levels or — once depth is back to 0 — IS the
+                # enclosing brace we want). This finds the true enclosing brace
+                # regardless of how much nesting sits between it and the key.
+                #
+                # Verified against 10 cases before shipping (see
+                # test_deepseek_rescue.py): the original failing case, the
+                # plain/common no-nesting case (must still work — this is the
+                # hot path), doubly- and deeply-nested objects, nesting both
+                # before AND after the key, a duplicated key, unbalanced
+                # decoy braces earlier in the string, and three "must
+                # correctly return nothing" negative cases (no key present,
+                # key present but no valid JSON around it, empty input).
                 idx = rc.rfind(f'"{rescue_key}"')
                 if idx >= 0:
-                    brace = rc.rfind('{', 0, idx)
+                    brace = -1
+                    _depth = 0
+                    _i = idx - 1
+                    while _i >= 0:
+                        _c = rc[_i]
+                        if _c == '}':
+                            _depth += 1
+                        elif _c == '{':
+                            if _depth == 0:
+                                brace = _i
+                                break
+                            _depth -= 1
+                        _i -= 1
                     if brace >= 0:
                         try:
                             m_obj = _json.loads(rc[brace:])
@@ -3032,8 +4602,19 @@ def _translate_deepseek(api_key: str, payload: dict, rescue_key: str = "translat
             abort(422,
                   f"DeepSeek returned no content (finish_reason={finish!r}). "
                   "Retry the page.")
+        # Preserve usage for the cost tracker (see cost-tracker.js). This was
+        # previously dropped here — the function rebuilds a minimal
+        # {"choices":[...]} response and usage silently fell off the edge,
+        # even though DeepSeek's real response always includes it (prompt_tokens,
+        # prompt_cache_hit_tokens, prompt_cache_miss_tokens, completion_tokens,
+        # total_tokens — see api-docs.deepseek.com/api/create-chat-completion).
+        # `data` here is still the full parsed response from earlier in this
+        # function, so `usage` is exactly what DeepSeek sent, untouched.
+        resp_body = {"choices": [{"message": {"content": content}}]}
+        if isinstance(data.get("usage"), dict):
+            resp_body["usage"] = data["usage"]
         return Response(
-            _json.dumps({"choices": [{"message": {"content": content}}]}),
+            _json.dumps(resp_body),
             status=200,
             content_type="application/json",
         )
@@ -3165,6 +4746,23 @@ def _translate_gemini(api_key: str, payload: dict):
             abort(422, "Gemini returned an empty response. Check your API key / model and retry.")
 
     normalized = {"choices": [{"message": {"content": text}}]}
+    # Preserve usage for the cost tracker (see cost-tracker.js), normalized to
+    # the same {prompt_tokens, completion_tokens, total_tokens} field names
+    # DeepSeek's OpenAI-compatible usage object already uses (see
+    # _translate_deepseek above) — the field names differ 1:1
+    # (promptTokenCount → prompt_tokens, etc.) purely because Gemini's native
+    # API uses camelCase where OpenAI-style APIs use snake_case; the actual
+    # counts mean the same thing. total_tokens is passed through separately
+    # rather than trusting completion_tokens alone to already include any
+    # thinking-token cost — belt-and-braces given thinkingBudget=0 is a
+    # request, not a guarantee (see the thinking-mode handling above).
+    usage_meta = gemini_resp.get("usageMetadata")
+    if isinstance(usage_meta, dict):
+        normalized["usage"] = {
+            "prompt_tokens":     usage_meta.get("promptTokenCount", 0),
+            "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
+            "total_tokens":      usage_meta.get("totalTokenCount", 0),
+        }
     return Response(
         _json.dumps(normalized),
         status=200,
@@ -3182,6 +4780,10 @@ def translate():
           "key":              "<api key>",
           "payload":          { ...OpenAI-style chat-completions body... },
           "source_lang":      "vi",                      # optional, for lang hints
+          "rescue_key":       "translations",             # optional, DeepSeek only —
+                                                            # see _translate_deepseek's
+                                                            # docstring / this route's
+                                                            # rescue_key comment below
         }
 
     All providers return an OpenAI-compatible JSON body so the frontend
@@ -3193,6 +4795,19 @@ def translate():
     api_key          = body.get("key", "").strip()
     payload          = body.get("payload")
     source_lang      = body.get("source_lang", "").strip().lower()
+    # Top-level JSON key _translate_deepseek's thinking-mode rescue hunts for
+    # inside reasoning_content when `content` comes back empty (see that
+    # function's docstring). Defaults to "translations" — the shape
+    # translateBatch()/translatePendingRegions()/retranslatePage() all use.
+    # Callers whose prompt asks for a DIFFERENT top-level key (the
+    # correction UI's single-region retranslate asks for {"tl":...,"t":...},
+    # Check Flow asks for {"issues":[...]}) must say so here, or the rescue
+    # silently can never find their shape and every thinking-mode empty-
+    # content response becomes an unrecoverable 422 instead of a rescued
+    # 200 — confirmed as the cause of the correction UI's single-region
+    # ↺ retranslate button 422ing whenever DeepSeek's response landed in
+    # reasoning_content instead of content.
+    rescue_key       = (body.get("rescue_key") or "translations").strip() or "translations"
 
     if not api_key:
         abort(400, "API key required.")
@@ -3208,7 +4823,219 @@ def translate():
         return _translate_gemini(api_key, payload)
     else:
         # Default / "deepseek"
-        return _translate_deepseek(api_key, payload)
+        return _translate_deepseek(api_key, payload, rescue_key=rescue_key)
+
+
+# ─── DeepL  (NOT an LLM provider — kept fully separate from /translate) ──────
+#
+# DeepL's API takes plain strings in and returns plain translated strings
+# out. There's no chat-completions shape, no "classify this as speech vs
+# SFX", no JSON-recovery step to parse a model's free-form output — DeepL
+# can't return malformed JSON because there's no JSON at all, just a
+# translations array of {text, detected_source_language}.
+#
+# This is why DeepL gets its own routes rather than a third branch inside
+# _translate_gemini/_translate_deepseek's shared /translate contract: forcing
+# it through that contract would mean either inventing a fake "chat
+# completion" wrapper around a plain-string API for no reason, or teaching
+# translateBatch()'s JSON-recovery/index-remapping logic about a response
+# shape that will never actually need recovering. Two clean, honest routes
+# beat one route pretending DeepL is an LLM.
+#
+# Region "type" classification (speech/thought/sfx/sign) is an LLM-only
+# capability — DeepL has no equivalent. translateBatchDeepL() on the
+# frontend defaults every region to 'speech' rather than guessing; see that
+# function's comment for why.
+
+def _deepl_base_url(api_key: str) -> str:
+    """
+    DeepL API Free keys are suffixed ':fx' and MUST be called via
+    api-free.deepl.com — calling api.deepl.com (the Pro/paid host) with a
+    Free key fails outright. This one check is what lets a single /translate-
+    deepl route serve both Free and Pro users without asking them which
+    plan they're on; the key itself already says.
+
+    CAVEAT (2026-08-02): DeepL retired the API Free/API Pro plans this logic
+    was written against — confirmed directly from DeepL's own support docs
+    (support.deepl.com/hc/en-us/articles/360021200939-DeepL-API-plans: "The
+    DeepL API Free plan can no longer be purchased" / "...API Pro plan can
+    no longer be purchased"). New signups now get Developer or Growth
+    instead. It has NOT been independently verified whether Developer-tier
+    keys still use the ':fx' suffix and still route to api-free.deepl.com,
+    or whether that convention changed along with the plan rename. If a
+    Developer/Growth key gets routed to the wrong host by this function,
+    DeepL's own API error should surface clearly (wrong-host calls fail
+    outright rather than silently succeeding) — but this hasn't been
+    exercised against a real key from either new plan.
+    """
+    return "https://api-free.deepl.com" if api_key.strip().endswith(":fx") else "https://api.deepl.com"
+
+
+@app.route("/translate-deepl", methods=["POST"])
+def translate_deepl():
+    """
+    POST body:
+        {
+          "key":         "<DeepL API key>",   # ends in ':fx' for Free-tier keys
+          "texts":       ["line one", "line two", ...],
+          "target_lang": "ES",                  # DeepL ISO code, e.g. from /deepl-languages
+          "source_lang": "ja",                  # optional — DeepL auto-detects if omitted
+        }
+    Response:  { "translations": ["línea uno", "línea dos", ...] }
+               (plain strings, parallel to the input "texts" array — no
+               classification, no per-item metadata; see module comment above)
+
+    Calls DeepL's real /v2/translate endpoint directly — no LLM prompt
+    engineering, no JSON-recovery, because DeepL doesn't need any of that.
+    """
+    body        = request.get_json(force=True, silent=True) or {}
+    api_key     = body.get("key", "").strip()
+    texts       = body.get("texts", [])
+    target_lang = body.get("target_lang", "").strip()
+    source_lang = body.get("source_lang", "").strip()
+
+    if not api_key:
+        abort(400, "DeepL API key required.")
+    if not isinstance(texts, list) or not texts:
+        abort(400, "texts must be a non-empty array of strings.")
+    if not target_lang:
+        abort(400, "target_lang required (DeepL ISO code, e.g. 'ES', 'PT-BR').")
+
+    deepl_payload = {
+        "text":        [str(t) for t in texts],
+        "target_lang": target_lang,
+    }
+    # DeepL auto-detects source language when omitted — genuinely useful here
+    # since manga source language is already known from the chapter metadata,
+    # but auto-detect is a safe fallback if that's ever missing/wrong.
+    #
+    # IMPORTANT: DeepL's source_lang has NO regional-variant concept at all —
+    # per DeepL's own docs, e.g. "Portuguese (no distinction is made between
+    # the varieties) detected as source language" — only TARGET languages
+    # have variants like PT-BR/PT-PT, ZH-HANS/ZH-HANT. Source is always the
+    # bare 2-letter code. MangaDex's chapter.translatedLanguage field,
+    # however, routinely includes a regional suffix (its own docs: codes
+    # follow "$language-$region" when the alpha-2 code alone isn't specific
+    # enough, e.g. "zh-hk", "pt-br") — a Brazilian Portuguese scanlation is
+    # tagged "pt-br" on MangaDex, not "pt". Sending that straight through as
+    # source_lang="PT-BR" gets rejected by DeepL outright, since PT-BR isn't
+    # a valid source code — only a valid TARGET code. Stripping to the
+    # leading 2-letter code before uppercasing fixes this without needing
+    # the frontend to know anything about DeepL's source/target asymmetry.
+    if source_lang:
+        deepl_payload["source_lang"] = source_lang.split("-")[0].upper()
+
+    url = _deepl_base_url(api_key) + "/v2/translate"
+    try:
+        r = requests.post(
+            url,
+            json=deepl_payload,
+            headers={
+                "Authorization": f"DeepL-Auth-Key {api_key}",
+                "Content-Type":  "application/json",
+                "User-Agent":    USER_AGENT,
+            },
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        abort(502, f"DeepL API error: {e}")
+
+    if not r.ok:
+        # 456 = DeepL's "quota exceeded" code (not a standard HTTP status name,
+        # but it's what DeepL actually returns) — worth a clearer message than
+        # a raw pass-through, since it's the single most likely error a
+        # free-tier user will hit.
+        if r.status_code == 456:
+            abort(429, "DeepL says you've used up this key's translation allowance. "
+                       "DeepL retired the old Free/Pro plans in mid-2026 — current plans "
+                       "(Developer/Growth) have different allowance shapes, and some "
+                       "don't reset monthly the way the old Free plan did, so this app "
+                       "can't tell you exactly when or whether it resets. Check your "
+                       "usage and plan details at your DeepL account dashboard, or "
+                       "upgrade at deepl.com/pro#developer.")
+        # Surface DeepL's own error body otherwise — same pass-through pattern
+        # _translate_gemini uses for its upstream errors.
+        return Response(r.content, status=r.status_code,
+                        content_type=r.headers.get("Content-Type", "application/json"))
+
+    try:
+        deepl_resp   = r.json()
+        translations = [t.get("text", "") for t in deepl_resp.get("translations", [])]
+    except Exception:
+        abort(502, "DeepL response parse error.")
+
+    # DeepL is billed per character regardless of success shape below this
+    # point, so — same reasoning as Gemini/DeepSeek's usage capture — record
+    # what we can even though DeepL's own response has no token/char count
+    # field to report back. The cost tracker's DeepL entry in rates.json
+    # works off characters sent, not a usage object from the response, so
+    # there's nothing to normalize here; the frontend computes it from the
+    # request it already built.
+    return jsonify({"translations": translations})
+
+
+@app.route("/deepl-languages", methods=["POST"])
+def deepl_languages():
+    """
+    POST body:  { "key": "<DeepL API key>" }
+    Response:   { "languages": [{"code": "ES", "name": "Spanish"}, ...] }
+
+    Proxies DeepL's own /v2/languages?type=target endpoint rather than
+    hardcoding a language list in this app. DeepL adds languages over time
+    (Thai and Vietnamese are both recent-ish additions) — asking DeepL
+    directly is the only way this doesn't quietly go stale. Requires a key
+    (same as the Gemini-model-list pattern elsewhere) since /v2/languages is
+    an authenticated endpoint.
+    """
+    body    = request.get_json(force=True, silent=True) or {}
+    api_key = body.get("key", "").strip()
+    if not api_key:
+        abort(400, "DeepL API key required.")
+
+    url = _deepl_base_url(api_key) + "/v2/languages?type=target"
+    try:
+        r = requests.get(
+            url,
+            headers={"Authorization": f"DeepL-Auth-Key {api_key}", "User-Agent": USER_AGENT},
+            timeout=15,
+        )
+    except requests.RequestException as e:
+        abort(502, f"DeepL API error: {e}")
+
+    if not r.ok:
+        return Response(r.content, status=r.status_code,
+                        content_type=r.headers.get("Content-Type", "application/json"))
+
+    try:
+        langs = r.json()
+        out = [{"code": l.get("language", ""), "name": l.get("name", "")} for l in langs]
+    except Exception:
+        abort(502, "DeepL response parse error.")
+    return jsonify({"languages": out})
+
+
+@app.route("/ocr/recommendation", methods=["GET"])
+def ocr_recommendation():
+    """
+    GET ?lang=vi&local_engine=rapidocr
+
+    Cheap, synchronous lookup — just _recommend_local_engine(), no image
+    decoding, no local-engine load, no Vision call, no cost. Exists so the
+    frontend can show the engine-recommendation banner BEFORE queuing any
+    page's real /ocr work, instead of only finding out after the first
+    page's response — which, with runConcurrent's pool of 3, meant up to
+    3 pages (and more, as the pool kept pulling from the queue regardless
+    of a later banner click) had already run on the wrong engine before the
+    user could react. See _runChapterPipeline in pipeline.js for the caller,
+    which awaits this before its first runConcurrent(tasks, 3).
+
+    Response: { "local_engine_recommendation": {"engine": ..., "reason": ...} | null }
+    """
+    lang         = request.args.get("lang", "en").lower()
+    local_engine = request.args.get("local_engine", "easyocr").strip().lower()
+    if local_engine not in ("easyocr", "rapidocr"):
+        local_engine = "easyocr"   # unrecognised value — fail safe to the default, not a 500
+    return jsonify({"local_engine_recommendation": _recommend_local_engine(lang, local_engine)})
 
 
 @app.route("/ocr", methods=["POST"])
@@ -3217,8 +5044,18 @@ def ocr_page():
     POST body:  { "url": "https://cdn…/page.jpg", "lang": "vi",
                   "ai_key": "AIza…",          # optional — enables Gemini Vision OCR
                   "ai_model": "gemini-2.5-flash",
-                  "vision_mode": "smart" }    # 'smart' | 'all' | 'off'  (default: 'smart')
+                  "vision_mode": "smart",     # 'smart' | 'all' | 'off'  (default: 'smart')
+                  "local_engine": "easyocr" } # 'easyocr' | 'rapidocr'  (default: 'easyocr')
     Response:   { "regions": [{ "text": "…", "cx": 45.2, "cy": 23.1 }, …] }
+
+    local_engine picks which LOCAL engine runs — either as the only OCR
+    (vision_mode='off' or no ai_key), or for position-matching /
+    Vision-fallback alongside Gemini Vision. See _run_rapidocr_detection's
+    docstring for the accuracy/speed/robustness tradeoffs found in testing;
+    default stays 'easyocr' so existing installs don't silently change
+    behavior. The response includes "local_engine_recommendation" when the
+    chapter's language has a real (tested, not guessed) recommendation that
+    differs from what was requested — see _recommend_local_engine.
 
     "url" may be replaced with "image_b64" (raw base64 or a data: URL) for a
     local-folder / CBZ page — see _load_image_bytes(). Everything else about
@@ -3229,9 +5066,29 @@ def ocr_page():
       'smart' — only for languages in VISION_LANGS (complex/vertical scripts).
                 Best for free-tier users: saves quota for scripts EasyOCR handles well.
       'all'   — Vision OCR for every language. Max quality but doubles API calls.
-      'off'   — Always EasyOCR regardless. Zero extra quota used.
-    DeepSeek users never send an ai_key so they always use EasyOCR.
-    If Gemini Vision errors or returns empty, falls back to EasyOCR automatically.
+      'off'   — Always the local_engine choice below, regardless. Zero extra quota used.
+    local_engine (EasyOCR vs RapidOCR) is a fully separate choice from which
+    service TRANSLATES — this route never even sees a "provider" field.
+    DeepSeek/DeepL users can still send an ai_key here via the frontend's
+    separate "Gemini key for Vision OCR" field (Vision OCR always calls
+    Gemini regardless of who translates — see ocr-client.js's ocrPage()),
+    and whether or not they do, local_engine is honored exactly the same as
+    it is for a Gemini-translator user: EasyOCR or RapidOCR, whichever the
+    Local OCR Engine dropdown/per-language override says. (Was previously
+    documented here as "DeepSeek users never send an ai_key so they always
+    use EasyOCR" — that predates the separate vision-ocr-key field and was
+    wrong on both counts even before then, since it ignored local_engine
+    entirely.)
+    If Gemini Vision errors or returns empty, falls back to local_engine automatically.
+
+    Micro-crop rescue: when Vision succeeds, any of its items that
+    _match_vision_to_easyocr couldn't pair with an EasyOCR box (capped at
+    4/page) get a second, focused Gemini call on just that crop — see
+    _rescue_orphaned_vision_regions docstring for why this targets
+    precisely the population most likely to need it (text EasyOCR read too
+    differently to confirm a match). Only replaces text, never position.
+    Response includes "rescue": {"rescued": n, "attempted": n} when this
+    fired at all.
     """
     body         = request.get_json(force=True, silent=True) or {}
     lang         = body.get("lang", "en").lower()
@@ -3239,6 +5096,17 @@ def ocr_page():
     ai_key       = body.get("ai_key",       "").strip()
     ai_model     = body.get("ai_model",     "gemini-2.5-flash").strip()
     vision_mode  = body.get("vision_mode",  "smart").strip().lower()  # 'smart' | 'all' | 'off'
+    local_engine = body.get("local_engine", "easyocr").strip().lower()  # 'easyocr' | 'rapidocr'
+    if local_engine not in ("easyocr", "rapidocr"):
+        local_engine = "easyocr"   # unrecognised value — fail safe to the default, not a 500
+    _run_local_detection = (
+        _run_rapidocr_detection if local_engine == "rapidocr" else _run_easyocr_detection
+    )
+    # Surfaced to the frontend regardless of which branch below actually
+    # runs, so the recommendation banner can appear even on a page that
+    # ends up using Vision (the user may still want to know for next time
+    # Vision isn't used, e.g. quota runs out mid-chapter).
+    engine_recommendation = _recommend_local_engine(lang, local_engine)
 
     # 1. Load bytes — MangaDex CDN url, or a local-folder/CBZ image_b64
     image_bytes = _load_image_bytes(body)
@@ -3254,10 +5122,14 @@ def ocr_page():
         vision_mode == "all" or lang in VISION_LANGS
     )
     fallback_reason = None   # set if Vision was attempted but fell back
+    vision_usage    = None   # Gemini Vision usage, when Vision was attempted at all
+                              # (set even on a fallback — a "parse"/"empty" outcome
+                              # still consumed billed tokens, see _ocr_gemini_vision's
+                              # docstring)
 
     if use_vision:
         print(f"  [OCR] Using Gemini Vision for lang={lang} (mode={vision_mode})")
-        regions, fallback_reason = _ocr_gemini_vision(image_bytes, lang, ai_key, ai_model)
+        regions, fallback_reason, vision_usage = _ocr_gemini_vision(image_bytes, lang, ai_key, ai_model)
         if regions:
             # Vision found text — but Flash-Lite's cx/cy/box can still be
             # unreliable even after _ocr_gemini_vision's own normalisation
@@ -3268,30 +5140,76 @@ def ocr_page():
             # EasyOCR detection. Vision's text/type stay as-is either way;
             # only cx/cy/box may change. Items with no good EasyOCR match
             # keep whatever _ocr_gemini_vision already worked out for them.
-            easy_regions, raw_boxes_out, h_borders_pct, v_borders_pct = _run_easyocr_detection(image_bytes, lang, margin_scale)
-            matched, total = _match_vision_to_easyocr(regions, easy_regions, raw_boxes_out)
-            print(f"  [OCR] Vision+EasyOCR position match: {matched}/{total} item(s) "
-                  f"used EasyOCR boxes; {total - matched} kept Vision's own coords")
-            engine = "vision+easyocr" if matched else "vision"
+            easy_regions, raw_boxes_out, h_borders_pct, v_borders_pct = _run_local_detection(image_bytes, lang, margin_scale)
+            matched, total, matched_indices = _match_vision_to_easyocr(regions, easy_regions, raw_boxes_out)
+            # local_engine here, not a hardcoded "EasyOCR" — easy_regions holds
+            # whichever engine _run_local_detection actually ran (RapidOCR when
+            # local_engine == 'rapidocr'); the variable name is legacy from
+            # before RapidOCR existed (see ROADMAP.md's "Open questions" on
+            # this same naming gap) but the log text shouldn't lie about it.
+            engine_label = "RapidOCR" if local_engine == "rapidocr" else "EasyOCR"
+            print(f"  [OCR] Vision+{engine_label} position match: {matched}/{total} item(s) "
+                  f"used {engine_label} boxes; {total - matched} kept Vision's own coords")
+
+            # Micro-crop rescue: items EasyOCR's text couldn't confirm are
+            # disproportionately the hardest text on the page (see
+            # _rescue_orphaned_vision_regions docstring) — give each one a
+            # second, focused Gemini look before accepting Vision's
+            # first-pass read as final. Position is untouched; only text
+            # may improve. Best-effort — a rescue-pass failure never fails
+            # the page (see docstring's "silently keeps original" note).
+            rescue_stats = {"rescued": 0, "attempted": 0}
+            if total - matched > 0:
+                try:
+                    pil_for_rescue = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                    rescue_stats = _rescue_orphaned_vision_regions(
+                        regions, matched_indices, pil_for_rescue, lang, ai_key, ai_model
+                    )
+                    if rescue_stats["rescued"]:
+                        print(f"  [OCR] Micro-crop rescue: {rescue_stats['rescued']}/"
+                              f"{rescue_stats['attempted']} orphan(s) got improved text")
+                except Exception as e:
+                    # Never let a rescue-pass bug take down the whole /ocr
+                    # response — the page already has a usable result
+                    # without it (see docstring: best-effort, not a new
+                    # failure mode).
+                    print(f"  [OCR] Micro-crop rescue pass errored (ignored): {e}")
+
+            engine = f"vision+{local_engine}" if matched else "vision"
             return jsonify({"regions": regions, "raw_boxes": raw_boxes_out,
                             "ocr_engine": engine,
-                            "h_borders": h_borders_pct, "v_borders": v_borders_pct})
-        # Vision returned nothing — fall through to EasyOCR
+                            "h_borders": h_borders_pct, "v_borders": v_borders_pct,
+                            **({"rescue": rescue_stats} if rescue_stats["attempted"] else {}),
+                            **({"usage": vision_usage, "usage_model": ai_model} if vision_usage else {}),
+                            **({"local_engine_recommendation":
+                                {"engine": engine_recommendation[0], "reason": engine_recommendation[1]}}
+                               if engine_recommendation else {})})
+        # Vision returned nothing — fall through to the local engine
         # fallback_reason tells the frontend why: "quota" | "error" | "network" | "parse" | "empty"
-        print(f"  [OCR] Vision fell back ({fallback_reason}) — using EasyOCR")
+        print(f"  [OCR] Vision fell back ({fallback_reason}) — using {local_engine}")
 
-    # ── EasyOCR path ──────────────────────────────────────────────────────────
-    regions, raw_boxes_out, h_borders_pct, v_borders_pct = _run_easyocr_detection(image_bytes, lang, margin_scale)
+    # ── Local OCR path (EasyOCR or RapidOCR, per local_engine) ─────────────────
+    regions, raw_boxes_out, h_borders_pct, v_borders_pct = _run_local_detection(image_bytes, lang, margin_scale)
 
     return jsonify({
         "regions":   regions,
         "raw_boxes": raw_boxes_out,
-        "ocr_engine": "easyocr",
+        "ocr_engine": local_engine,
         "h_borders": h_borders_pct,
         "v_borders": v_borders_pct,
         # Included when Vision was attempted but fell back (quota / error / network / parse).
         # None / absent when Vision was never tried (mode='off', no key, or lang not in VISION_LANGS).
         **({"vision_fallback": fallback_reason} if fallback_reason else {}),
+        # Vision may have burned real billed tokens even on a fallback (e.g. a
+        # "parse" outcome — Gemini returned a 200, we just couldn't use it) —
+        # surface that so the cost tracker doesn't miss it just because the
+        # OCR result ultimately came from the local engine instead.
+        **({"usage": vision_usage, "usage_model": ai_model} if vision_usage else {}),
+        # See _recommend_local_engine — only present when we have a tested
+        # recommendation for this language AND it differs from what was used.
+        **({"local_engine_recommendation":
+            {"engine": engine_recommendation[0], "reason": engine_recommendation[1]}}
+           if engine_recommendation else {}),
     })
 
 
@@ -3333,66 +5251,50 @@ def ocr_crop():
     try:
         reader = _get_reader(lang)
         with _infer_lock:
-            raw = reader.readtext(arr, detail=1, paragraph=False,
-                                  contrast_ths=0.1, adjust_contrast=0.5,
-                                  text_threshold=0.6, min_size=10)
+            fragments, frag_confidences = _easyocr_readtext_primary(reader, arr, lang)
     except Exception as e:
         abort(500, f"OCR failed: {e}")
 
+    # This route has no merge step (a crop is already one region, nothing
+    # to cluster) so min_conf applies directly here rather than being
+    # deferred the way _run_easyocr_detection defers it to
+    # _merge_bubble_regions. The short-word carve-out was already applied
+    # inside _easyocr_readtext_primary.
     min_conf = _MIN_CONF_MAP.get(lang, 0.35)
-    # Same short-word carve-out as _run_easyocr_detection (see comment there) —
-    # standalone 1-2 character words can legitimately score well below the
-    # normal per-language floor.
-    texts = [t.strip() for _, t, c in raw
-             if t.strip() and c >= (0.12 if len(t.strip()) <= 2 else min_conf)]
+    texts = [text for (_, text), conf in zip(fragments, frag_confidences)
+             if conf >= min_conf or len(text) <= 2]
     return jsonify({"text": " ".join(texts)})
 
 
-@app.route("/vision-crop", methods=["POST"])
-def vision_crop():
+class _VisionCropError(Exception):
+    """Raised by _gemini_crop_ocr_core on any failure. status carries the
+    HTTP status the original /vision-crop route should abort() with;
+    programmatic callers (e.g. the micro-crop rescue pass) catch this
+    directly instead of triggering a Flask abort."""
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def _gemini_crop_ocr_core(pil_img: "Image.Image", box_px: tuple, lang: str,
+                           ai_key: str, ai_model: str) -> tuple:
     """
-    POST body:  { "url": "https://cdn…/page.jpg",   # or "image_b64" — see _load_image_bytes
-                  "box": [x1, y1, x2, y2],   # pixel coords
-                  "lang": "vi",
-                  "ai_key": "AIza…",
-                  "ai_model": "gemini-2.0-flash-lite" }
-    Response:   { "text": "recognized text" }
-
-    Crops the image to the given pixel box and sends it to Gemini Vision
-    for OCR. Called by the correction UI's ✦ VISION draw mode.
-
-    Compared to /ocr-crop (EasyOCR), this handles:
-      - Stylised / decorative manga fonts that stump EasyOCR
-      - Vertical text / mixed-script SFX
-      - Regions where EasyOCR confidence was too low and the badge was wrong
+    Core of Gemini Vision crop-OCR: crop pil_img to box_px, send to Gemini,
+    return (text, usage). Shared by the /vision-crop route (a user-drawn
+    box in the correction UI) and the automatic micro-crop rescue pass in
+    /ocr (orphaned/garbage-text EasyOCR fragments — see that route's
+    docstring). Raises _VisionCropError on any failure; callers decide
+    whether that means abort()ing an HTTP request or just skipping one
+    fragment in an automatic pass.
     """
-    body     = request.get_json(force=True, silent=True) or {}
-    box      = body.get("box", [])
-    lang     = body.get("lang", "en").lower()
-    ai_key   = body.get("ai_key", "").strip()
-    ai_model = body.get("ai_model", "gemini-2.5-flash").strip()
+    iw, ih = pil_img.size
+    x1, y1, x2, y2 = (max(0, min(int(v), d - 1))
+                       for v, d in zip(box_px, [iw, ih, iw, ih]))
+    if x2 <= x1 or y2 <= y1:
+        raise _VisionCropError(400, "Crop box has zero area after clamping.")
+    crop = pil_img.crop((x1, y1, x2, y2))
 
-    if len(box) != 4:
-        abort(400, "box must be [x1, y1, x2, y2] in pixels.")
-    if not ai_key:
-        abort(400, "ai_key is required for Vision crop.")
-
-    # Load bytes — MangaDex CDN url, or a local-folder/CBZ image_b64
-    image_bytes = _load_image_bytes(body)
-
-    # Decode + crop
-    try:
-        pil      = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        iw, ih   = pil.size
-        x1, y1, x2, y2 = (max(0, min(int(v), d - 1))
-                           for v, d in zip(box, [iw, ih, iw, ih]))
-        if x2 <= x1 or y2 <= y1:
-            abort(400, "Crop box has zero area after clamping.")
-        crop = pil.crop((x1, y1, x2, y2))
-    except Exception as e:
-        abort(422, f"Image decode/crop error: {e}")
-
-    # Encode crop as base64 PNG for Gemini
     buf = io.BytesIO()
     crop.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
@@ -3428,14 +5330,14 @@ def vision_crop():
     if "lite" in ai_model.lower() or "flash" in ai_model.lower():
         payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
 
-    # Vision-crop is called once per hand-drawn box, often several in a row —
-    # a single transient hiccup (network blip, Gemini briefly 5xx-ing) used to
-    # surface immediately as a 502 and leave that one box permanently stuck
-    # with no OCR text (see erase-tool.js's _isErasePending / visionFailed).
-    # A couple of quick retries absorb most of that transient noise so it
-    # doesn't reach the UI as a failure at all; genuine, persistent failures
-    # (bad key, real quota exhaustion, malformed request) still surface —
-    # those aren't retried away, just the flaky-network class of error.
+    # Crop-OCR is called once per box, often several in a row (hand-drawn
+    # boxes, or now the automatic rescue pass firing on multiple orphaned
+    # fragments on one page) — a single transient hiccup (network blip,
+    # Gemini briefly 5xx-ing) used to surface immediately as a failure and
+    # leave that one box permanently stuck with no OCR text. A couple of
+    # quick retries absorb most of that transient noise; genuine, persistent
+    # failures (bad key, real quota exhaustion, malformed request) still
+    # surface — those aren't retried away, just the flaky-network class.
     r = None
     last_exc = None
     for attempt in range(3):
@@ -3447,8 +5349,6 @@ def vision_crop():
                 headers={"Content-Type": "application/json"},
             )
             last_exc = None
-            # Retry on 5xx (transient upstream error) — not on 4xx, which
-            # won't be fixed by retrying (bad key, bad request, etc.).
             if r.status_code >= 500 and attempt < 2:
                 time.sleep(0.6 * (attempt + 1))
                 continue
@@ -3459,25 +5359,86 @@ def vision_crop():
                 time.sleep(0.6 * (attempt + 1))
                 continue
     if last_exc is not None:
-        abort(502, f"Gemini network error: {last_exc}")
+        raise _VisionCropError(502, f"Gemini network error: {last_exc}")
 
     if r.status_code == 429:
-        abort(429, "Gemini quota exceeded — try again shortly or use EasyOCR Draw instead.")
+        raise _VisionCropError(429, "Gemini quota exceeded — try again shortly or use EasyOCR Draw instead.")
     if not r.ok:
-        abort(502, f"Gemini Vision error {r.status_code}: {r.text[:200]}")
+        raise _VisionCropError(502, f"Gemini Vision error {r.status_code}: {r.text[:200]}")
 
     try:
-        resp    = r.json()
-        # Strip any thinking blocks: only keep plain text parts
-        parts   = resp["candidates"][0]["content"]["parts"]
-        text    = " ".join(
+        resp  = r.json()
+        parts = resp["candidates"][0]["content"]["parts"]
+        text  = " ".join(
             p["text"].strip() for p in parts
             if p.get("text") and not p.get("thought")
         ).strip()
     except (KeyError, IndexError, ValueError):
-        abort(502, "Unexpected Gemini Vision response format.")
+        raise _VisionCropError(502, "Unexpected Gemini Vision response format.")
 
-    return jsonify({"text": text})
+    usage = None
+    usage_meta = resp.get("usageMetadata")
+    if isinstance(usage_meta, dict):
+        usage = {
+            "prompt_tokens":     usage_meta.get("promptTokenCount", 0),
+            "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
+            "total_tokens":      usage_meta.get("totalTokenCount", 0),
+        }
+    return text, usage
+
+
+@app.route("/vision-crop", methods=["POST"])
+def vision_crop():
+    """
+    POST body:  { "url": "https://cdn…/page.jpg",   # or "image_b64" — see _load_image_bytes
+                  "box": [x1, y1, x2, y2],   # pixel coords
+                  "lang": "vi",
+                  "ai_key": "AIza…",
+                  "ai_model": "gemini-2.0-flash-lite" }
+    Response:   { "text": "recognized text" }
+
+    Crops the image to the given pixel box and sends it to Gemini Vision
+    for OCR. Called by the correction UI's ✦ VISION draw mode.
+
+    Compared to /ocr-crop (EasyOCR), this handles:
+      - Stylised / decorative manga fonts that stump EasyOCR
+      - Vertical text / mixed-script SFX
+      - Regions where EasyOCR confidence was too low and the badge was wrong
+
+    This is now a thin wrapper around _gemini_crop_ocr_core — see that
+    function's docstring. The automatic micro-crop rescue pass in /ocr
+    (orphaned/garbage-text EasyOCR fragments) calls the same core directly.
+    """
+    body     = request.get_json(force=True, silent=True) or {}
+    box      = body.get("box", [])
+    lang     = body.get("lang", "en").lower()
+    ai_key   = body.get("ai_key", "").strip()
+    ai_model = body.get("ai_model", "gemini-2.5-flash").strip()
+
+    if len(box) != 4:
+        abort(400, "box must be [x1, y1, x2, y2] in pixels.")
+    if not ai_key:
+        abort(400, "ai_key is required for Vision crop.")
+
+    image_bytes = _load_image_bytes(body)
+    try:
+        pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception as e:
+        abort(422, f"Image decode error: {e}")
+
+    try:
+        text, usage = _gemini_crop_ocr_core(pil, tuple(box), lang, ai_key, ai_model)
+    except _VisionCropError as e:
+        abort(e.status, e.message)
+
+    # Usage for the cost tracker (see cost-tracker.js) — small requests
+    # still cost real, trackable money at high volume, which is the whole
+    # point of tracking "any future paid call", not just the big ones.
+    result = {"text": text}
+    if usage is not None:
+        result["usage"] = usage
+        result["usage_model"] = ai_model
+    return jsonify(result)
 
 
 # ─── Startup helpers ──────────────────────────────────────────────────────────
@@ -3509,6 +5470,7 @@ def export_page():
       { "url": "https://cdn…/page.jpg",
         "regions": [ {text, t, x, y, box:[x1,y1,x2,y2] (0-100 pct), tl} ],
         "erase_mode": "auto" | "inpaint" | "flatten"   (optional, default auto),
+        "ai_inpaint": bool                     (optional, default false),
         "erase_only": bool                     (optional, default false) }
 
     POST body (standalone Erase Tool manual mode — new):
@@ -3520,6 +5482,7 @@ def export_page():
                     font_path: str (optional, must be one _discover_system_fonts returned),
                     font_size: int (optional, explicit pt size — 0/absent = auto-fit)} ],
         "erase_mode": "auto" | "inpaint" | "flatten"   (optional, default auto),
+        "ai_inpaint": bool                     (optional, default false),
         "legend_layout": "below" | "sidebar" | "both"  (optional, default below),
         "font_path": str    (optional, page-level default font),
         "font_size": int    (optional, page-level default size, 0 = auto-fit) }
@@ -3539,6 +5502,19 @@ def export_page():
     better than the auto-detection (e.g. the Erase Tool, where a human
     already drew the box and may want a specific behavior).
 
+    ai_inpaint (optional, default False): when true, whichever boxes would
+    have gone through classical NS/TELEA inpaint under the erase_mode above
+    are routed to LaMa instead (see _erase_region_ai_inpaint) — an opt-in,
+    per-request choice, not a server-wide setting, matching this app's
+    "bring your own tradeoff" pattern for Vision OCR / translation provider
+    choice elsewhere. Meaningfully slower per page than classical inpaint,
+    and the first request that ever sets this true triggers a one-time
+    ~200MB model download — see that function's docstring for real measured
+    cost and an honest caveat about unconfirmed quality-vs-classical claims.
+    A missing/failed model load surfaces as a 503 with a plain-language
+    message rather than a silent fallback to classical inpaint, since a
+    silent downgrade would defeat the point of someone explicitly opting in.
+
     manual mode only touches the exact boxes given — nothing else on the
     page is erased or written to, so anything the person didn't box (SFX,
     background text, etc.) is left untouched with no extra "skip this type"
@@ -3555,6 +5531,7 @@ def export_page():
     body       = request.get_json(force=True, silent=True) or {}
     erase_mode = body.get("erase_mode", "auto").strip().lower()
     manual     = bool(body.get("manual", False))
+    ai_inpaint = bool(body.get("ai_inpaint", False))
 
     if erase_mode not in ("auto", "inpaint", "flatten"):
         abort(400, "erase_mode must be 'auto', 'inpaint', or 'flatten'.")
@@ -3605,7 +5582,10 @@ def export_page():
             png_bytes = typeset_manual_page(image_bytes, boxes, erase_mode=erase_mode,
                                              legend_layout=legend_layout,
                                              font_path=page_font_path,
-                                             font_size=page_font_size)
+                                             font_size=page_font_size,
+                                             ai_inpaint=ai_inpaint)
+        except _AiInpaintUnavailable as e:
+            abort(503, str(e))
         except Exception as e:
             abort(422, f"Typesetting failed: {e}")
         return Response(png_bytes, content_type="image/png")
@@ -3617,7 +5597,9 @@ def export_page():
 
     try:
         png_bytes = typeset_page(image_bytes, regions, erase_mode=erase_mode,
-                                  erase_only=erase_only)
+                                  erase_only=erase_only, ai_inpaint=ai_inpaint)
+    except _AiInpaintUnavailable as e:
+        abort(503, str(e))
     except Exception as e:
         abort(422, f"Typesetting failed: {e}")
 
@@ -3685,28 +5667,58 @@ def export_chapter():
 
 
 # ─── Entry ────────────────────────────────────────────────────────────────────
-# FIX #14 — safety check: this app stores Gemini/DeepSeek API keys and
+# FIX #14 — safety check: this app stores Gemini/DeepSeek/DeepL API keys and
 #   MangaDex client_secret in the browser's localStorage in plaintext, and
-#   /proxy, /ocr, /ocr-crop, /vision-crop, /export-page, /export-chapter are
-#   unauthenticated HTTP endpoints.
+#   every POST route in this file (/auth/login, /auth/refresh, /proxy,
+#   /translate, /translate-deepl, /deepl-languages, /ocr, /ocr-crop,
+#   /vision-crop, /export-page, /export-chapter) is unauthenticated.
 #   That's an acceptable risk model for HOST=127.0.0.1 (only the local user
 #   can reach it), but becomes a real credential/data exposure if HOST is
 #   ever changed to 0.0.0.0 or a LAN/public address without adding auth in
-#   front of it. Warn loudly rather than silently doing the unsafe thing.
+#   front of it.
+#
+# FIX #16 — a printed warning doesn't stop anything; it only helps someone
+#   who reads server output BEFORE the server is already reachable, which
+#   defeats the point for anyone who set HOST and walked away, or who's
+#   running this unattended (a scheduled task, a Docker container, etc).
+#   Change of behavior: exposing the server now REFUSES TO START unless the
+#   person opts in explicitly via the MTL_ALLOW_EXPOSED=1 environment
+#   variable — set once, on purpose, not something that happens as a side
+#   effect of editing HOST. This does not add real authentication (still
+#   none) — it just makes "I am knowingly accepting this risk" a deliberate
+#   act instead of an easy-to-miss side effect.
 _LOCALHOST_ADDRS = {"127.0.0.1", "localhost", "::1"}
 
-def _warn_if_exposed(host: str) -> None:
+def _check_exposure_or_exit(host: str) -> None:
     if host in _LOCALHOST_ADDRS:
         return
+
+    allowed = os.environ.get("MTL_ALLOW_EXPOSED", "").strip() == "1"
+
     print()
-    print("  ⚠️   WARNING: HOST is not localhost (currently: " + host + ")")
+    print("  ⚠️   HOST is not localhost (currently: " + host + ")")
     print("  ⚠️   This server has no authentication. Anyone who can reach it")
     print("  ⚠️   on your network can read stored API keys, log in as you on")
     print("  ⚠️   MangaDex (client_secret is sent to /auth/login unauthenticated),")
-    print("  ⚠️   and use /proxy, /ocr, /ocr-crop, /vision-crop, /export-page,")
-    print("  ⚠️   /export-chapter.")
+    print("  ⚠️   and use /auth/login, /auth/refresh, /proxy, /translate,")
+    print("  ⚠️   /translate-deepl, /deepl-languages, /ocr, /ocr-crop,")
+    print("  ⚠️   /vision-crop, /export-page, /export-chapter — every route in")
+    print("  ⚠️   this app that takes a POST body, with no login of its own.")
     print("  ⚠️   Only do this on a trusted network, and ideally put it behind")
     print("  ⚠️   your own auth (reverse proxy, VPN, etc.) first.")
+
+    if not allowed:
+        print()
+        print("  ✗   Refusing to start on a non-localhost address without an")
+        print("  ✗   explicit opt-in. If you understand the risk above and want")
+        print("  ✗   to proceed anyway, set MTL_ALLOW_EXPOSED=1 and run again:")
+        print()
+        print("        (macOS/Linux)  MTL_ALLOW_EXPOSED=1 python server.py")
+        print("        (Windows PS)   $env:MTL_ALLOW_EXPOSED=1; python server.py")
+        print()
+        sys.exit(1)
+
+    print("  ⚠️   MTL_ALLOW_EXPOSED=1 is set — starting anyway.")
     print()
 
 
@@ -3717,7 +5729,7 @@ if __name__ == "__main__":
         print(f"     Stop the other process, or change PORT at the top of this script.\n")
         sys.exit(1)
 
-    _warn_if_exposed(HOST)
+    _check_exposure_or_exit(HOST)
 
     addr = f"http://{HOST}:{PORT}"
     print(f"\n  MangaTL  →  {addr}")

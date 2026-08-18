@@ -142,7 +142,12 @@ async function _runExportItem(item, label) {
     const resp = await fetch('/export-page', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...(await imageRefBody(item.url)), regions: item.regions, erase_mode: 'auto' }),
+      body: JSON.stringify({
+        ...(await imageRefBody(item.url)),
+        regions: item.regions,
+        erase_mode: 'auto',
+        ai_inpaint: getAiInpaintSetting(),
+      }),
     });
     if (!resp.ok) {
       const msg = await resp.text().catch(() => '');

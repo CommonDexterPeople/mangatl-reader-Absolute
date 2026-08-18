@@ -22,6 +22,12 @@ const MODEL_INFO = {
   // DeepSeek models
   'deepseek|deepseek-v4-flash':           { provider: 'deepseek', placeholder: 'sk-…',  label: 'DeepSeek V4 Flash',      keyUrl: 'https://platform.deepseek.com',          keySite: 'platform.deepseek.com' },
   'deepseek|deepseek-v4-pro':             { provider: 'deepseek', placeholder: 'sk-…',  label: 'DeepSeek V4 Pro',        keyUrl: 'https://platform.deepseek.com',          keySite: 'platform.deepseek.com' },
+  // DeepL — not an LLM, see translate-client.js's DeepL section / server.py's
+  // "DeepL" section comment. Free API keys end in ':fx' (DeepL's own
+  // convention for distinguishing Free from Pro — see _deepl_base_url() in
+  // server.py); either key type works here, the app doesn't need to ask
+  // which plan the user is on.
+  'deepl|deepl':                          { provider: 'deepl',    placeholder: '…:fx or a Pro key', label: 'DeepL', keyUrl: 'https://www.deepl.com/en/pro#developer', keySite: 'deepl.com/pro#developer' },
 };
 
 function getModelInfo() {
@@ -63,7 +69,9 @@ function onModelChange() {
     const modelVal = document.getElementById('ai-model')?.value || '';
     const freeNote = freeTierModels.includes(modelVal)
       ? ' (free tier — no credit card needed)'
-      : info.provider === 'gemini' ? ' (paid — billing required)' : ' (~$0.02–0.05/chapter)';
+      : info.provider === 'gemini' ? ' (paid — billing required)'
+      : info.provider === 'deepl'  ? ' (free up to 1,000,000 characters TOTAL — one-time, does not reset monthly — no credit card needed; DeepL rejects requests past that until you upgrade)'
+      : ' (~$0.02–0.05/chapter)';
     hintEl.textContent = `Get a free key at `;
     const a = document.createElement('a');
     a.id = 'ai-key-link'; a.href = info.keyUrl;
@@ -72,11 +80,31 @@ function onModelChange() {
     hintEl.appendChild(document.createTextNode(freeNote));
   }
 
-  // Show Vision OCR mode only for Gemini; hide entirely for DeepSeek
+  // Vision OCR is available whenever a Gemini key exists somewhere — either
+  // Gemini is the main translator (its own ai-key field IS the Gemini key),
+  // Vision OCR is available whenever a Gemini key exists somewhere — either
+  // Gemini is the main translator (its own ai-key field IS the Gemini key),
+  // or DeepL/DeepSeek is the translator and a separate Vision-OCR-specific
+  // Gemini key has been entered below.
+  //
+  // This used to be Gemini-only ("show Vision OCR mode only for Gemini;
+  // hide entirely for DeepSeek") — that coupling meant switching away from
+  // Gemini silently killed Vision OCR entirely, forcing every non-Gemini
+  // user onto EasyOCR regardless of how well Vision would've read that
+  // page. Vision OCR and "which service translates the text" are unrelated
+  // axes — see /ocr's own docstring in server.py, it never took a
+  // translator provider as input to begin with, only ai_key/ai_model for
+  // Gemini specifically. DeepSeek was later folded into this same
+  // treatment as DeepL, once it became clear the "hide for DeepSeek"
+  // exception had no real justification of its own — DeepSeek is just as
+  // capable of pairing with a separately-keyed Vision OCR pass as DeepL is.
   const visionGroup = document.getElementById('vision-ocr-group');
+  const visionKeyWrap = document.getElementById('vision-ocr-key-wrap');
   if (visionGroup) {
     const isGemini = info.provider === 'gemini';
-    visionGroup.style.display = isGemini ? '' : 'none';
+    const needsSeparateVisionKey = info.provider === 'deepl' || info.provider === 'deepseek';
+    visionGroup.style.display = (isGemini || needsSeparateVisionKey) ? '' : 'none';
+    if (visionKeyWrap) visionKeyWrap.style.display = needsSeparateVisionKey ? '' : 'none';
     // If switching TO a free-tier Gemini model, nudge toward 'smart' to protect quota —
     // but only if the user hasn't explicitly changed it from the default themselves.
     const freeTierModels2 = ['gemini|gemini-3.1-flash-lite'];
@@ -87,8 +115,54 @@ function onModelChange() {
     }
   }
 
+  _updateTargetLangDeepLSupport(info.provider);
+
   localStorage.setItem('mtl_ai_model', document.getElementById('ai-model').value);
 }
+
+// Grays out target-language options DeepL can't translate to when DeepL is
+// the active provider (re-enables them for every other provider). Uses
+// _DEEPL_TARGET_LANG_MAP (translate-client.js's static map, kept in sync
+// with DeepL's real supported-language list — see that map's own comment)
+// rather than waiting on the live /deepl-languages fetch just to grey out a
+// dropdown; translateBatchDeepL() still double-checks against the live list
+// before actually sending a request, this is just an upfront UI hint so the
+// user isn't surprised by an error after already correcting a chapter.
+function _updateTargetLangDeepLSupport(provider) {
+  const sel = document.getElementById('target-lang');
+  if (!sel) return;
+  const isDeepL = provider === 'deepl';
+  let currentIsUnsupported = false;
+  for (const opt of sel.querySelectorAll('option')) {
+    if (opt.value === '__custom__') {
+      // DeepL can't translate to a language the user free-typed — this app
+      // has no way to know if it's one DeepL supports under a different
+      // name. Disable rather than guess.
+      opt.disabled = isDeepL;
+      continue;
+    }
+    const supported = !isDeepL || !!_DEEPL_TARGET_LANG_MAP[opt.value];
+    opt.disabled = !supported;
+    if (isDeepL && !supported) {
+      opt.title = `DeepL doesn't support ${opt.value} as a target language.`;
+      if (opt.selected) currentIsUnsupported = true;
+    } else {
+      opt.removeAttribute('title');
+    }
+  }
+  // If the currently-selected target language just became unsupported,
+  // fall back to English (DeepL's most universally-supported target)
+  // rather than leaving an invalid selection in place — translateBatch()
+  // would otherwise throw on the very next translate click with no chance
+  // for the user to notice the dropdown silently pointed at something
+  // disabled.
+  if (currentIsUnsupported) {
+    sel.value = 'English';
+    onTargetLangChange();
+    toast('DeepL doesn\u2019t support that target language — switched to English.');
+  }
+}
+
 
 // ── Target language dropdown ──────────────────
 function onTargetLangChange() {
@@ -169,6 +243,17 @@ async function translateBatch(regions, sourceLang, targetLang, signal) {
   const meaningfulItems = items.filter(it => !isNoise(it));
   const sendItems = meaningfulItems.length ? meaningfulItems : items;
 
+  // DeepL is not an LLM provider — see server.py's "DeepL" section comment
+  // for the full reasoning. It gets its own request/response handling
+  // (translateBatchDeepL, below) but shares the noise-filtering and
+  // index-remap setup above with the LLM path, since garbage OCR fragments
+  // are exactly as pointless to pay DeepL to "translate" as they are to
+  // send to an LLM.
+  if (info.provider === 'deepl') {
+    return translateBatchDeepL(regions, items, sendItems, isNoise, key, sourceLang, targetLang, signal);
+  }
+
+
 
   // Build fetch body once — reused across all retry attempts.
   const _fetchBody = JSON.stringify({
@@ -178,12 +263,29 @@ async function translateBatch(regions, sourceLang, targetLang, signal) {
     payload: {
       model:       modelId,
       temperature: 0.3,
-      // DeepSeek thinking models (V4 Pro) count reasoning tokens against max_tokens,
-      // so a budget of 4000 can be exhausted entirely on chain-of-thought before the
-      // model ever outputs a single character of JSON.  8000 gives ample headroom for
-      // both thinking (~3000–5000 tokens) and the JSON answer (~500–2000 tokens).
-      // Gemini: thinking tokens are counted separately (thinkingBudget=0 suppresses
-      // them entirely), so 8000 here only affects the JSON output length — safe.
+      // IMPORTANT: DeepSeek's V4 models (both Flash AND Pro) default to
+      // thinking mode ENABLED, at "high" effort -- the model ID alone does
+      // NOT control this (confirmed against DeepSeek's own Thinking Mode
+      // docs, api-docs.deepseek.com/guides/thinking_mode). Previously this
+      // request never set the `thinking` field at all, so "DeepSeek V4
+      // Flash" silently ran in thinking mode despite the dropdown label
+      // promising "non-thinking, faster" -- that's what caused 422s
+      // ("finish_reason=length, no final JSON") on busy pages: reasoning
+      // tokens ate the whole max_tokens budget before any JSON got written.
+      //
+      // Explicitly disable thinking for Flash (matches its label/intent).
+      // Leave Pro's thinking ON (that's the point of picking Pro), but
+      // still needs 8000 max_tokens as headroom for reasoning + answer.
+      ...(info.provider === 'deepseek'
+        ? { thinking: { type: modelId === 'deepseek-v4-flash' ? 'disabled' : 'enabled' } }
+        : {}),
+      // 8000 gives headroom for DeepSeek Pro's chain-of-thought
+      // (~3000-5000 tokens) plus the JSON answer (~500-2000 tokens).
+      // With thinking disabled (Flash, above), this budget is barely
+      // touched -- pure upside, no downside to leaving it at 8000 for both.
+      // Gemini: thinking tokens are counted separately (thinkingBudget=0
+      // suppresses them entirely), so 8000 here only affects the JSON
+      // output length -- safe.
       max_tokens:  8000,
       // DeepSeek JSON mode enforces a valid JSON object in the response.
       // Gemini ignores this field (the proxy strips it before forwarding).
@@ -211,7 +313,8 @@ async function translateBatch(regions, sourceLang, targetLang, signal) {
             `  sign      — signs, labels, written environmental text\n\n` +
             `SFX RULE: If a region is clearly an SFX or onomatopoeia, translate it as a brief English ` +
             `sound effect wrapped in asterisks (e.g. *Rumble*, *Crash*, *Sigh*) — do NOT return \"-\" for these.\n` +
-            `Return ONLY a JSON object with a \"translations\" key containing exactly ${sendItems.length} items, ` +
+            buildGlossaryPromptBlock(_activeGlossaryKey) +
+            `\nReturn ONLY a JSON object with a \"translations\" key containing exactly ${sendItems.length} items, ` +
             `preserving the original i values:\n` +
             `{\"translations\":[{\"i\":0,\"tl\":\"translated text\",\"t\":\"type\"},...]}\n` +
             `If a region is pure noise with no translatable meaning, set tl to \"-\".\n` +
@@ -226,6 +329,16 @@ async function translateBatch(regions, sourceLang, targetLang, signal) {
   // Free-tier Gemini and DeepSeek both rate-limit at high concurrency;
   // retrying automatically is far better than dropping every page as an error card.
   // Delays: 4 s → 8 s → 16 s (3 attempts). After that, throw so the caller shows an error.
+  //
+  // Gemini specifically also gets a PROACTIVE wait before the first attempt
+  // — see utils.js's waitForGeminiSlot() for why concurrency alone (3
+  // pages in flight) doesn't bound requests-per-minute the way it looks
+  // like it should. Only gated on 'gemini': DeepSeek has its own separate
+  // RPM budget this limiter has no visibility into, and shouldn't be
+  // slowed down by a limiter tuned for a different provider's numbers.
+  if (info.provider === 'gemini') {
+    await waitForGeminiSlot();
+  }
   const _RETRY_DELAYS = [4000, 8000, 16000];
   let res, _attempt = 0;
   while (true) {
@@ -247,6 +360,12 @@ async function translateBatch(regions, sourceLang, targetLang, signal) {
   }
 
   const data  = await res.json();
+  // Record cost as soon as we know usage was billed — regardless of whether
+  // the JSON-recovery parsing below succeeds. The API charged for this call
+  // the moment it responded; a malformed response is still a paid response.
+  if (data.usage) {
+    recordUsage('translate', data.usage, info.provider, getModelId());
+  }
   const text  = data.choices?.[0]?.message?.content ?? '';
   const clean = text.replace(/```(?:json)?\n?/g, '').replace(/```/g, '').trim();
 
@@ -381,5 +500,229 @@ async function translateBatch(regions, sourceLang, targetLang, signal) {
     console.error('[TL] Falling back to all-"—" translations for this page:', _err);
     return fallback();
   }
+}
+
+
+// ══════════════════════════════════════════════
+// DEEPL  (not an LLM — see server.py's "DeepL" section comment for the
+// full reasoning on why this is a separate code path rather than a third
+// branch inside translateBatch()'s LLM-shaped request/response handling)
+// ══════════════════════════════════════════════
+
+// DeepL's supported target languages, fetched from its own /v2/languages
+// endpoint (server.py proxies this as /deepl-languages) rather than
+// hardcoded here — DeepL adds languages over time (Thai and Vietnamese are
+// both fairly recent additions), so a hardcoded list would silently go
+// stale. Cached per API key for the session: the list is identical for
+// every request with the same key and essentially never changes within a
+// single sitting, so there's no reason to refetch it every translateBatch()
+// call — same "fetch once per session, not once per call" pattern
+// _loadRates() already uses in cost-tracker.js.
+let _deepLLangCache = null;   // { key: apiKey, languages: [{code,name}, …] } | null
+let _deepLLangPromise = null; // in-flight fetch, shared across concurrent callers
+
+async function _loadDeepLLanguages(key) {
+  if (_deepLLangCache && _deepLLangCache.key === key) return _deepLLangCache.languages;
+  if (_deepLLangPromise) return _deepLLangPromise;
+  _deepLLangPromise = (async () => {
+    try {
+      const res = await fetch('/deepl-languages', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        // Same two-shape situation as translateBatchDeepL() below — this
+        // app's own errors use 'description', DeepL's own use 'message'.
+        throw new Error(err?.description || err?.message || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      _deepLLangCache = { key, languages: data.languages || [] };
+      return _deepLLangCache.languages;
+    } finally {
+      _deepLLangPromise = null;
+    }
+  })();
+  return _deepLLangPromise;
+}
+
+// Maps this app's free-text target-language names (see the <select> in
+// index.html — "Portuguese (Brazil)", "Chinese (Simplified)", etc, plus
+// anything the user types into the custom-language box) onto DeepL's ISO
+// codes. Only the app's OWN dropdown values are mapped here — DeepL's full
+// live list (fetched above) is still what actually gets validated against,
+// so a language DeepL adds later works automatically once it's added to
+// index.html's dropdown too, without needing a new line here.
+//
+// Values verified directly against developers.deepl.com/docs/getting-started/supported-languages
+// (fetched 2026-08-01) — the API's full language table, not DeepL's
+// consumer Translator product page, which lists a different (larger) set
+// under different assumptions. Getting this from the API-specific docs
+// mattered: an earlier pass at this map, sourced from general web search
+// results about "DeepL supported languages" without checking which product
+// surface they described, wrongly excluded Malay, Filipino, Hindi, Bengali,
+// Tamil, Burmese, Persian, and Swahili — all of which the actual
+// /v2/translate API supports fine. Only Khmer is genuinely absent from
+// DeepL's API language table as of this check.
+const _DEEPL_TARGET_LANG_MAP = {
+  // 'EN' (bare, no regional variant) is NOT what DeepL's own
+  // /v2/languages?type=target endpoint actually lists — it lists EN-GB and
+  // EN-US as concrete target variants. Using bare 'EN' here made the live-
+  // list check below always fail and throw "DeepL doesn't support English"
+  // even though DeepL obviously translates to English fine; the code was
+  // just never going to exact-match anything in the live list. EN-US is a
+  // concrete code guaranteed to be present in that list.
+  'English':                    'EN-US',
+  'Malay':                      'MS',
+  'Indonesian':                 'ID',
+  'Filipino':                   'TL', // DeepL's API calls this "Tagalog" (code TL), same language the dropdown means by "Filipino"
+  'Japanese':                   'JA',
+  'Chinese (Simplified)':       'ZH-HANS',
+  'Chinese (Traditional)':      'ZH-HANT',
+  'Korean':                     'KO',
+  'Thai':                       'TH',
+  'Vietnamese':                 'VI',
+  'Hindi':                      'HI',
+  'Bengali':                    'BN',
+  'Tamil':                      'TA',
+  'Burmese':                    'MY',
+  'Spanish':                    'ES',
+  'French':                     'FR',
+  'German':                     'DE',
+  'Portuguese':                 'PT-PT',
+  'Portuguese (Brazil)':        'PT-BR',
+  'Italian':                    'IT',
+  'Russian':                    'RU',
+  'Polish':                     'PL',
+  'Dutch':                      'NL',
+  'Turkish':                    'TR',
+  'Ukrainian':                  'UK',
+  'Czech':                      'CS',
+  'Romanian':                   'RO',
+  'Hungarian':                  'HU',
+  'Swedish':                    'SV',
+  'Danish':                     'DA',
+  'Norwegian':                  'NB',
+  'Finnish':                    'FI',
+  'Greek':                      'EL',
+  'Arabic':                     'AR',
+  'Persian':                    'FA',
+  'Hebrew':                     'HE',
+  'Swahili':                    'SW',
+  // Deliberately NOT mapped — genuinely absent from DeepL's API language
+  // table as of this recheck: Khmer. Any custom-typed language is also
+  // excluded (see _updateTargetLangDeepLSupport() — this app has no way to
+  // know if a free-typed name matches one of DeepL's ~100 codes, so it
+  // doesn't try to guess). Selecting either while DeepL is the active
+  // provider throws a clear error below rather than silently mistranslating
+  // or failing with an opaque DeepL 400.
+};
+
+/**
+ * DeepL request/response handling — called from translateBatch() when
+ * info.provider === 'deepl'. Shares items/sendItems/isNoise (built by the
+ * caller) so noise filtering can't drift between the two provider paths.
+ *
+ * Output contract matches translateBatch()'s LLM path exactly: an array
+ * parallel to `regions` of { tl, t } objects. DeepL cannot classify text
+ * type (speech/thought/sfx/sign — that's an LLM-only capability, DeepL is
+ * a plain translation API), so every non-noise region is typed 'speech'
+ * unconditionally — same simple default the LLM path already falls back
+ * to for any region an LLM failed to classify.
+ *
+ * GLOSSARY NOT APPLIED HERE: glossary.js's per-series terms (see
+ * buildGlossaryPromptBlock) work by appending instruction text to an LLM
+ * system prompt — DeepL's API takes plain source strings with no prompt/
+ * instruction concept at all, so there's no equivalent hook to apply
+ * glossary overrides through. A person using DeepL with an active
+ * glossary gets DeepL's own (unmodified) translation for every term,
+ * silently — no error, since this isn't a failure, it's a real capability
+ * gap between provider shapes. Worth surfacing in the glossary modal's
+ * copy if DeepL users report this as confusing in practice.
+ */
+async function translateBatchDeepL(regions, items, sendItems, isNoise, key, sourceLang, targetLang, signal) {
+  const deepLTarget = _DEEPL_TARGET_LANG_MAP[targetLang];
+  if (!deepLTarget) {
+    throw new Error(
+      `DeepL doesn't support "${targetLang}" as a target language. ` +
+      `Switch to Gemini or DeepSeek for this language, or pick a different target language.`
+    );
+  }
+
+  // Validate against DeepL's actual live list too, not just this app's own
+  // map — catches the case where DeepL quietly drops support for something
+  // this map hasn't been updated to reflect yet.
+  try {
+    const liveLanguages = await _loadDeepLLanguages(key);
+    if (liveLanguages.length && !liveLanguages.some(l => l.code === deepLTarget)) {
+      throw new Error(
+        `DeepL no longer lists "${targetLang}" (${deepLTarget}) as a supported target language ` +
+        `— this may have changed since this app's language map was last updated. ` +
+        `Switch to Gemini or DeepSeek for this language.`
+      );
+    }
+  } catch (langErr) {
+    // If the language-list check itself fails (network hiccup, key not yet
+    // valid, etc.) don't block translation entirely on that — fall through
+    // and let the actual /translate-deepl call surface any real problem.
+    // Only a genuine "DeepL doesn't support this" mismatch (thrown above,
+    // inside the try) should stop the request before it's even sent.
+    if (langErr.message.includes('no longer lists')) throw langErr;
+    console.warn('[TL] DeepL language-list check failed (continuing anyway):', langErr.message);
+  }
+
+  const texts = sendItems.map(it => it.text);
+  let totalChars = 0;
+  for (const t of texts) totalChars += t.length;
+
+  const res = await fetch('/translate-deepl', {
+    method: 'POST', signal,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      key,
+      texts,
+      target_lang: deepLTarget,
+      source_lang: sourceLang,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    // Two possible shapes here: this app's own Flask abort() errors use
+    // {"description": "..."} , but DeepL's own error responses (passed
+    // through as-is when DeepL itself rejects the request — see
+    // server.py's translate_deepl()) use {"message": "..."} instead, per
+    // DeepL's own API error format. Checking both means a real DeepL
+    // rejection reason (bad language code, bad key, etc.) actually reaches
+    // the user instead of collapsing into a generic "DeepL error 400".
+    throw new Error(err?.description || err?.message || `DeepL error ${res.status}`);
+  }
+
+  const data = await res.json();
+  // DeepL has no usage/token object in its response at all (it's not an
+  // LLM — see the module comment above) — record the exact character
+  // count we already know we sent instead. This is deepLChars, not
+  // fallbackChars: it's an exact figure, not an estimate (see
+  // recordUsage()'s own parameter docs in cost-tracker.js).
+  recordUsage('translate', null, 'deepl', 'deepl', 0, 0, totalChars);
+
+  const translations = data.translations || [];
+  // Pre-fill every slot the same way the LLM path does: noise-filtered
+  // regions get 'sfx' (renders as a small badge, not an empty bubble),
+  // everything else defaults to 'speech' since DeepL can't classify.
+  const out = regions.map((_, i) => (
+    isNoise(items[i]) ? { tl: '—', t: 'sfx' } : { tl: '—', t: 'speech' }
+  ));
+  // sendItems is a filtered subset of items/regions in the same relative
+  // order (see translateBatch() above) — translations[] from DeepL comes
+  // back in that same order, one-to-one, since DeepL's /v2/translate
+  // preserves input array order exactly (unlike the LLM path, there's no
+  // "i" index to remap by — DeepL has no way to reorder or drop items).
+  sendItems.forEach((it, sendIdx) => {
+    if (sendIdx >= translations.length) return; // fewer results than sent — leave placeholder
+    out[it.i] = { tl: translations[sendIdx] || '—', t: 'speech' };
+  });
+
+  return out;
 }
 

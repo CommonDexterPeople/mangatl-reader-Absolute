@@ -1,0 +1,32 @@
+--- erase-tool.js.orig	2026-08-06 09:08:58.798675715 +0000
++++ erase-tool.js	2026-08-06 09:09:25.769895225 +0000
+@@ -55,6 +55,7 @@
+ }
+ 
+ function openEraseTool() {
++  _eraseSyncAiInpaintToggle();
+   _eraseBoxes = [];
+   _eraseImgMeta = null;
+   _eraseResultBlob = null;
+@@ -80,6 +81,21 @@
+   _renderEraseBatchPanel();
+ }
+ 
++// BUG FIX: #erase-ai-inpaint (index.html) is hardcoded to "off" and
++// nothing was ever syncing it from the Settings-panel value on open — so
++// a person who set Settings > Textured-area erase quality > AI inpaint
++// would land on this screen looking at a toolbar that still read
++// "Classical inpaint". getAiInpaintSetting() (utils.js) reads THIS
++// toolbar element whenever it's present on screen and takes it over
++// localStorage, so the stale display wasn't just cosmetic — it silently
++// overrode their saved setting back to "off" on every export. Called at
++// the top of openEraseTool(), before the toolbar is even shown, so the
++// dropdown always reflects the real setting the first time it's visible.
++function _eraseSyncAiInpaintToggle() {
++  const el = document.getElementById('erase-ai-inpaint');
++  if (el) el.value = localStorage.getItem('mtl_ai_inpaint') === 'on' ? 'on' : 'off';
++}
++
+ /**
+  * Accepts either a chapter URL (mangadex.org/chapter/<id>) — loads its
+  * first page — or is extended later to accept a direct page pick. Keeping

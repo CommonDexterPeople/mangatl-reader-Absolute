@@ -97,6 +97,14 @@ async function chapterFromSuwayomi(mangaId, chapterIndex, sourceLang) {
     kind:       'suwayomi',
     title:      meta.name || `Chapter ${chapterIndex}`,
     sourceLang: sourceLang || 'ja',
+    // Suwayomi's own internal manga id (the same value already baked into
+    // the composite `id` above as its middle segment) — exposed as its
+    // own field so callers that want a stable per-series key (glossary.js's
+    // setActiveGlossary, in particular) don't need to parse it back out of
+    // that string. Prefixed to keep it visibly distinct from a MangaDex
+    // UUID — the two id spaces aren't interchangeable and shouldn't be
+    // able to collide if a MangaDex mangaId ever looked numeric.
+    mangaId:    `suwayomi:${mangaId}`,
     pages,
   };
 }

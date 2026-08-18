@@ -1409,6 +1409,44 @@ body {
   line-height: 1.6;
 }
 
+/* Per-chapter local-OCR-engine recommendation banner — see
+   maybeShowEngineRecommendation() in ocr-client.js. Deliberately NOT
+   modal/blocking (top-of-reader banner, dismissible, non-fatal) — this is
+   a suggestion, not an error; see ROADMAP.md item 2 for why a blocking
+   popup was explicitly ruled out here. */
+#engine-rec-banner {
+  display: none;
+  margin: 0.7rem 0 0 0;
+  padding: 0.7rem 0.9rem;
+  background: var(--bg4);
+  border: 1px solid var(--border2);
+  border-left: 3px solid var(--ui);
+  border-radius: 4px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+#engine-rec-banner .rec-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.55rem;
+}
+#engine-rec-banner button {
+  background: transparent;
+  border: 1px solid var(--border2);
+  color: var(--text);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.66rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+}
+#engine-rec-banner button:hover { border-color: var(--ui); color: var(--ui); }
+#engine-rec-banner button.rec-primary { border-color: var(--ui); color: var(--ui); }
+
 /* ─── CORRECTION UI ──────────────────────────── */
 .btn-correct {
   background: rgba(0,0,0,0.65);
@@ -1808,6 +1846,147 @@ body {
 }
 .flow-modal-footer .corr-btn-retrans,
 .flow-modal-footer .corr-btn-close { flex: 1 1 auto; min-width: 0; }
+
+/* ── Glossary modal (reuses .flow-modal-backdrop/.flow-modal/.flow-modal-hdr/
+   .flow-modal-footer above — only the per-row layout is glossary-specific,
+   since a term row is a horizontal 3-input strip rather than the Check
+   Flow modal's stacked old/new diff text) ─────────────────────────────── */
+.glossary-modal { max-width: 40rem; }
+.glossary-row {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.45rem 0.5rem;
+}
+.glossary-input {
+  /* .corr-textarea's min-height/resize are textarea-only concerns —
+     these are single-line <input>s, so both are overridden here rather
+     than reused as-is. */
+  min-height: unset; resize: none; height: 2rem;
+  flex: 1 1 0; min-width: 0;
+}
+.glossary-note { flex: 0.8 1 0; opacity: 0.85; }
+.glossary-arrow {
+  color: var(--dim); font-family: 'Share Tech Mono', monospace;
+  font-size: 0.8rem; flex: 0 0 auto;
+}
+.glossary-row .flow-modal-close { flex: 0 0 auto; }
+
+/* ── Reading history: Continue Reading card, recent list, header dropdown ── */
+.continue-reading-card { margin-bottom: 1.1rem; }
+.continue-reading-inner {
+  background: var(--bg3);
+  border: 1px solid var(--speech);
+  border-radius: 6px;
+  padding: 0.8rem 1rem;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.continue-reading-inner:hover { background: rgba(0,229,176,0.06); }
+.continue-reading-label {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.6rem; letter-spacing: 0.12em;
+  color: var(--speech); font-weight: 700;
+  margin-bottom: 0.3rem;
+}
+.continue-reading-title {
+  font-family: 'Crimson Pro', Georgia, serif;
+  font-size: 1.05rem; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.continue-reading-sub {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.62rem; color: var(--dim);
+  margin-top: 0.25rem;
+}
+.continue-reading-bar {
+  height: 3px; background: var(--border); border-radius: 2px;
+  margin-top: 0.5rem; overflow: hidden;
+}
+.continue-reading-bar > div { height: 100%; background: var(--speech); }
+
+/* .hist-row reuses .chlist-row's box/spacing entirely — only adds a
+   pointer cursor since the whole row is clickable here (resume),
+   unlike .chlist-row where only the download button is (download). */
+.hist-row { cursor: pointer; }
+.hist-row:hover { border-color: var(--border2); }
+
+.recent-dropdown {
+  position: absolute;
+  z-index: 200;   /* matches .flow-modal-backdrop — floats above the sticky reader header */
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 6px;
+  width: min(20rem, 90vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  padding: 0.4rem;
+  display: flex; flex-direction: column; gap: 0.3rem;
+}
+.recent-dropdown-row {
+  padding: 0.5rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.recent-dropdown-row:hover { background: var(--bg3); }
+.recent-dropdown-row.current { cursor: default; opacity: 0.7; }
+.recent-dropdown-row.current:hover { background: transparent; }
+
+/* ── Cost tracking badges + Cost Settings modal ───────────────────────── */
+.cost-badges {
+  display: flex; gap: 0.6rem; align-items: center;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.68rem; color: var(--dim);
+}
+.cost-badge {
+  cursor: pointer; padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border2); border-radius: 3px;
+  background: var(--bg3);
+}
+.cost-badge:hover { color: var(--text); border-color: var(--speech); }
+.cost-summary-row {
+  display: flex; justify-content: space-between; align-items: center;
+  flex-wrap: wrap; gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  font-size: 0.82rem;
+}
+.cost-reset-btn {
+  background: transparent; border: 1px solid var(--border2);
+  color: var(--dim); font-size: 0.65rem;
+  border-radius: 3px; padding: 0.1rem 0.4rem;
+  cursor: pointer; margin-left: 0.4rem;
+}
+.cost-reset-btn:hover { color: var(--danger); border-color: var(--danger); }
+.cost-rate-hint { color: var(--dim); font-size: 0.72rem; line-height: 1.4; }
+.cost-rate-row {
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  background: var(--bg3);
+  margin-bottom: 0.5rem;
+}
+.cost-rate-overridden { border-color: var(--speech); }
+.cost-rate-label {
+  font-size: 0.8rem; color: var(--text);
+  margin-bottom: 0.4rem;
+  display: flex; align-items: center; gap: 0.4rem;
+}
+.cost-rate-tag {
+  font-size: 0.6rem; color: var(--speech);
+  border: 1px solid var(--speech); border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+}
+.cost-rate-fields { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.cost-rate-field {
+  display: flex; flex-direction: column; gap: 0.2rem;
+  font-size: 0.68rem; color: var(--dim);
+  flex: 1 1 5rem; min-width: 5rem;
+}
+.cost-rate-field input { padding: 0.3rem 0.4rem; font-size: 0.78rem; }
+.cost-rate-empty { color: var(--dim); font-size: 0.8rem; padding: 1rem 0; text-align: center; }
 
 /* ═══════════════════════════════════════════════════════════════
    TRANSLATION RAIL — sticky sidebar on desktop, collapsible to a

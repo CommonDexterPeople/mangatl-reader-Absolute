@@ -17,7 +17,12 @@
     <div class="home-brand">
       <div class="home-title">Manga<span>TL</span></div>
       <div class="home-sub">MangaDex · EasyOCR+CLAHE · Multi-Provider AI</div>
+      <div class="cost-badges" style="justify-content:center; margin-top:0.4rem">
+        <span class="cost-badge" id="cost-badge-lifetime-home" onclick="showCostSettings()">Lifetime API cost: $0.00</span>
+      </div>
     </div>
+
+    <div class="continue-reading-card" id="continue-reading-card" style="display:none"></div>
 
     <div class="home-section">
       <div class="home-section-hdr"><span class="home-section-num">1</span> AI Setup</div>
@@ -34,8 +39,11 @@
             <option value="gemini|gemini-3.1-pro-preview">Gemini 3.1 Pro — Paid (flagship)</option>
           </optgroup>
           <optgroup label="DeepSeek (Cheap ~$0.02–0.05/chapter)">
-            <option value="deepseek|deepseek-v4-flash">DeepSeek V4 Flash</option>
-            <option value="deepseek|deepseek-v4-pro">DeepSeek V4 Pro (best quality)</option>
+            <option value="deepseek|deepseek-v4-flash">DeepSeek V4 Flash (now benchmarks above Pro, cheaper)</option>
+            <option value="deepseek|deepseek-v4-pro">DeepSeek V4 Pro</option>
+          </optgroup>
+          <optgroup label="DeepL (Free tier — 1M chars one-time, no card)">
+            <option value="deepl|deepl">DeepL — translation only, no speech/thought/SFX typing</option>
           </optgroup>
         </select>
       </div>
@@ -59,6 +67,11 @@
     </div>
 
     <button class="btn-go" onclick="startPipeline()">TRANSLATE CHAPTER</button>
+    <button class="btn-go" style="margin-top:0.5rem;background:transparent;border:1px solid var(--border2);color:var(--text)"
+            onclick="openQueueSetup()"
+            title="Translate several upcoming chapters in the background, unattended — they'll show up ready to read in Cached Chapters below">
+      ⏩ QUEUE UPCOMING CHAPTERS
+    </button>
 
     <div class="md-login-wrap" id="reading-prefs-wrap">
       <button class="md-login-toggle" onclick="document.getElementById('reading-prefs-wrap').classList.toggle('open')">
@@ -76,7 +89,72 @@
             <option value="all">All languages — max quality</option>
             <option value="off">Off — EasyOCR only, no quota used</option>
           </select>
+          <div id="vision-ocr-key-wrap" style="display:none;margin-top:0.5rem">
+            <!-- Shown when the main "AI Model" field above holds a non-Gemini
+                 key (DeepL or DeepSeek) — Vision OCR still needs an actual
+                 Gemini key to call Gemini's vision endpoint, and that key
+                 can't come from the main field in that case. Kept as its own
+                 persistent field here (see onModelChange() in
+                 translate-client.js), shared by both non-Gemini providers
+                 rather than duplicated per-provider. -->
+            <label class="form-label" for="vision-ocr-key" style="font-size:0.8rem;opacity:0.8">
+              Gemini key for Vision OCR
+              <span style="font-size:0.7rem;opacity:0.55;font-weight:400">(separate from your translation key above — Vision OCR always calls Gemini regardless of which service translates)</span>
+            </label>
+            <input id="vision-ocr-key" class="form-input" type="password"
+                   placeholder="AIza…" autocomplete="off" spellcheck="false"
+                   oninput="localStorage.setItem('mtl_vision_ocr_key', this.value)">
+          </div>
         </div>
+
+        <div class="form-group" id="local-ocr-engine-group">
+          <label class="form-label" for="local-ocr-engine">Local OCR Engine
+            <span style="font-size:0.7rem;opacity:0.55;font-weight:400;margin-left:0.3rem">(used when Vision OCR is off, or falls back)</span>
+          </label>
+          <select id="local-ocr-engine" class="form-input"
+                  onchange="localStorage.setItem('mtl_local_ocr_engine', this.value)">
+            <option value="easyocr">EasyOCR — more reliable, slower &amp; heavier</option>
+            <option value="rapidocr">RapidOCR — faster &amp; lighter, weaker on Vietnamese</option>
+          </select>
+          <div style="font-size:0.68rem;opacity:0.6;margin-top:0.4rem;line-height:1.5">
+            <b>EasyOCR:</b> more reliable on tone/diacritic-heavy languages
+            (e.g. Vietnamese, Korean); slower, heavier on RAM.<br>
+            <b>RapidOCR:</b> 4–7x faster, lighter on RAM, handles mixed-language
+            chapters better; weaker on Vietnamese, and its confidence score
+            doesn't reliably flag when it's wrong. Rarely, it may merge two
+            adjacent speech bubbles into one — use <b>✏ Correct</b> on the
+            page to split them back apart if that happens.
+          </div>
+        </div>
+
+        <div class="form-group" id="ai-inpaint-group">
+          <label class="form-label" for="ai-inpaint-mode">Textured-area erase quality
+            <span style="font-size:0.7rem;opacity:0.55;font-weight:400;margin-left:0.3rem">(used for Export / Erase Tool, not live reading)</span>
+          </label>
+          <select id="ai-inpaint-mode" class="form-input"
+                  onchange="localStorage.setItem('mtl_ai_inpaint', this.value)">
+            <option value="off">Off — classical inpaint (default, fast)</option>
+            <option value="on">AI inpaint — slower, may help on busy/textured backgrounds</option>
+          </select>
+          <div style="font-size:0.68rem;opacity:0.6;margin-top:0.4rem;line-height:1.5">
+            <b>Classical inpaint:</b> instant, works well on flat and lightly-shaded bubbles.<br>
+            <b>AI inpaint:</b> a learned model (LaMa) aimed at reconstructing hair/screentone/
+            linework passing under erased text better than classical inpaint — noticeably
+            slower per page, and downloads a one-time model file (~200MB) on first use.
+            Not yet confirmed better on real pages in every case — <b>✏ Correct</b> /
+            <b>🖌 paint before erase</b> remain the fallback if a patch still looks wrong.
+          </div>
+        </div>
+
+        <!-- engine-rec-banner moved to screen-reader's sticky .reader-header —
+             this div was inside #screen-home, which gets display:none via
+             the .screen CSS rule the instant startPipelineWithId() calls
+             show('screen-reader'), well before the first /ocr response (and
+             thus before any local_engine_recommendation) ever arrives. The
+             banner's JS (maybeShowEngineRecommendation in ocr-client.js) was
+             firing correctly and setting display:block, but on an element
+             nested inside an already-hidden ancestor — invisible regardless.
+             See reader-header below for its actual working home. -->
 
         <div class="form-row-wrap">
           <div class="form-row">
@@ -355,6 +433,14 @@
 
     <div class="home-section-divider"><span>your library</span></div>
 
+    <div class="chlist-header" id="home-history-header" style="display:none">
+      <span>Recently read</span>
+      <button class="btn-download-all" onclick="clearAllHistory()" title="Clear all reading history">
+        🗑 Clear
+      </button>
+    </div>
+    <div class="home-chapter-list" id="home-history-list" style="display:none"></div>
+
     <div class="home-cache-strip" id="home-cache-strip">
       <div class="home-cache-info" id="home-cache-info">
         <span class="cache-empty">No chapters cached yet</span>
@@ -373,6 +459,7 @@
     </div>
     <div class="home-chapter-list" id="home-chapter-list" style="display:none"></div>
     <div class="export-panel" id="home-download-panel"></div>
+    <div class="export-panel" id="home-queue-panel"></div>
 
     <button class="btn-erase-tool" onclick="openEraseTool()"
             title="Manually erase text from any page — no translation needed">
@@ -392,6 +479,9 @@
   <div class="erase-header">
     <button class="btn-back" onclick="show('screen-home')">← BACK</button>
     <div class="erase-header-title">🧹 Erase Tool</div>
+    <div class="cost-badges" style="margin-left:auto">
+      <span class="cost-badge" id="cost-badge-chapter-erase" onclick="showCostSettings()">This chapter: $0.00</span>
+    </div>
   </div>
 
   <div class="erase-intro">
@@ -478,6 +568,74 @@
     </div>
   </div>
 
+  <div class="md-login-wrap" id="erase-suwayomi-source-wrap">
+    <button class="md-login-toggle" onclick="toggleEraseSuwayomiSource()">
+      <span>Suwayomi (self-hosted) <span style="font-size:0.7rem;opacity:0.6">(hundreds of sources beyond MangaDex)</span></span>
+      <span class="arrow">▶</span>
+    </button>
+    <div class="md-login-body">
+      <div class="md-login-hint">
+        Reads a chapter from a <a href="https://github.com/Suwayomi/Suwayomi-Server" target="_blank" rel="noopener">Suwayomi-Server</a>
+        instance running on this machine (<code>http://127.0.0.1:4567</code> by default), same as the main reader's
+        Suwayomi source on the home screen. Find the <strong>Manga ID</strong> and <strong>Chapter Index</strong> by
+        browsing that chapter in Suwayomi's own WebUI first: the Manga ID is in its URL, and the Chapter Index is the
+        chapter's position in its list (1, 2, 3…) — not its title or chapter number. The chapter also needs to have
+        been opened at least once in Suwayomi's own reader already, so it's actually fetched the page list.
+      </div>
+      <div class="form-row" style="gap:0.6rem">
+        <div class="form-group" style="flex:1">
+          <label class="form-label" for="erase-suwayomi-manga-id">Manga ID</label>
+          <input id="erase-suwayomi-manga-id" class="form-input" type="number" min="1"
+                 placeholder="229" inputmode="numeric">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label class="form-label" for="erase-suwayomi-chapter-index">Chapter Index</label>
+          <input id="erase-suwayomi-chapter-index" class="form-input" type="number" min="1"
+                 placeholder="1" inputmode="numeric">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="erase-suwayomi-source-lang">Source Language</label>
+        <select id="erase-suwayomi-source-lang" class="form-input">
+          <option value="ja" selected>日本語 — Japanese</option>
+          <option value="ko">한국어 — Korean</option>
+          <option value="zh">中文 — Chinese</option>
+          <option value="zh-hk">中文（繁體）— Chinese (Trad.)</option>
+          <option value="en">English</option>
+          <option value="vi">Tiếng Việt — Vietnamese</option>
+          <option value="th">ภาษาไทย — Thai</option>
+          <option value="id">Bahasa Indonesia — Indonesian</option>
+          <option value="ms">Bahasa Melayu — Malay</option>
+          <option value="es">Español — Spanish</option>
+          <option value="fr">Français — French</option>
+          <option value="de">Deutsch — German</option>
+          <option value="it">Italiano — Italian</option>
+          <option value="pt">Português — Portuguese</option>
+          <option value="pt-br">Português (Brasil)</option>
+          <option value="ru">Русский — Russian</option>
+          <option value="pl">Polski — Polish</option>
+          <option value="nl">Nederlands — Dutch</option>
+          <option value="tr">Türkçe — Turkish</option>
+          <option value="uk">Українська — Ukrainian</option>
+          <option value="cs">Čeština — Czech</option>
+          <option value="hu">Magyar — Hungarian</option>
+          <option value="ro">Română — Romanian</option>
+          <option value="sv">Svenska — Swedish</option>
+          <option value="da">Dansk — Danish</option>
+          <option value="fi">Suomi — Finnish</option>
+          <option value="no">Norsk — Norwegian</option>
+          <option value="hr">Hrvatski — Croatian</option>
+          <option value="sk">Slovenčina — Slovak</option>
+          <option value="bg">Български — Bulgarian</option>
+          <option value="lt">Lietuvių — Lithuanian</option>
+          <option value="lv">Latviešu — Latvian</option>
+          <option value="ar">العربية — Arabic</option>
+        </select>
+      </div>
+      <button class="btn-go" onclick="loadEraseFromSuwayomi()">Load Chapter</button>
+    </div>
+  </div>
+
   <div class="erase-toolbar" id="erase-toolbar" style="display:none">
     <button id="erase-prev-page" class="export-row-btn" onclick="eraseGoToPage(-1)">← page</button>
     <span id="erase-page-label" class="erase-page-label">Page 1 / 1</span>
@@ -502,6 +660,11 @@
       <option value="auto" selected>Auto (fast fill on plain bubbles, inpaint elsewhere)</option>
       <option value="inpaint">Inpaint (always blend texture)</option>
       <option value="flatten">Flatten (always solid fill, cheaper)</option>
+    </select>
+    <select id="erase-ai-inpaint" class="form-input erase-mode-select"
+            title="Use a slower AI model (LaMa) instead of classical inpaint on textured regions">
+      <option value="off" selected>Classical inpaint</option>
+      <option value="on">AI inpaint (slower)</option>
     </select>
     <select id="erase-legend-layout" class="form-input erase-mode-select" title="Where 'outside page' translations are printed">
       <option value="below" selected>Legend: below image</option>
@@ -557,6 +720,18 @@
               onclick="exportTypesetChapter()" title="Download this chapter as typeset image files">
         ⬇ Export Typeset
       </button>
+      <div class="cost-badges">
+        <span class="cost-badge" id="cost-badge-chapter" onclick="showCostSettings()">This chapter: $0.00</span>
+        <span class="cost-badge" id="cost-badge-lifetime" onclick="showCostSettings()">Lifetime: $0.00</span>
+      </div>
+      <button class="btn-export" id="btn-glossary" onclick="openGlossaryModal()"
+              title="Per-series term list — keep names/honorifics translated the same way on every page">
+        📖 Glossary
+      </button>
+      <button class="btn-export" id="btn-recent" onclick="toggleRecentDropdown()"
+              title="Jump to a recently read chapter without leaving the reader">
+        📚 Recent
+      </button>
       <div class="cache-pill" id="reader-cache-pill" title="Translation cache">
         <span class="cache-pill-icon">💾</span>
         <span class="cache-pill-label" id="reader-cache-label"><span>0</span> cached</span>
@@ -566,6 +741,18 @@
     </div>
     <div class="progress-track">
       <div class="progress-fill" id="progress-fill"></div>
+    </div>
+    <!-- Lives here (inside the sticky .reader-header) instead of on
+         screen-home so it's actually visible while a chapter is being
+         OCR'd/read — see the comment left in screen-home's markup for why
+         it never worked there. -->
+    <div id="engine-rec-banner">
+      <div id="engine-rec-text"></div>
+      <div class="rec-actions">
+        <button id="engine-rec-switch"  class="rec-primary" onclick="_engineRecAction('switch')"></button>
+        <button id="engine-rec-keep"    onclick="_engineRecAction('keep')">Keep current</button>
+        <button id="engine-rec-always"  onclick="_engineRecAction('always')"></button>
+      </div>
     </div>
   </div>
 
@@ -606,6 +793,9 @@
 <script src="/static/js/state-and-constants.js"></script>
 <script src="/static/js/cache.js"></script>
 <script src="/static/js/utils.js"></script>
+<script src="/static/js/glossary.js"></script>
+<script src="/static/js/history.js"></script>
+<script src="/static/js/cost-tracker.js"></script>
 <script src="/static/js/mangadex-api.js"></script>
 <script src="/static/js/suwayomi-api.js"></script>
 <script src="/static/js/local-source.js"></script>
@@ -620,6 +810,7 @@
 <script src="/static/js/zip-writer.js"></script>
 <script src="/static/js/export.js"></script>
 <script src="/static/js/downloads.js"></script>
+<script src="/static/js/queue.js"></script>
 <script src="/static/js/paint-brush.js"></script>
 <script src="/static/js/erase-tool.js"></script>
 <script src="/static/js/trans-rail.js"></script>

@@ -34,6 +34,7 @@ let _brushSize = 24;        // brush diameter in *displayed* px (scaled to natur
 let _brushDirty = false;    // true once at least one stroke has been painted
 let _brushDrawing = false;
 let _brushMode = 'post';    // 'post' (touch up erase result) | 'pre' (paint before erase)
+let _peekingOriginal = false; // true while showing the pre-erase original instead of the result (post mode only)
 
 // ── PRE-erase brush state ─────────────────────────────────────────────────
 // Unlike post-erase (one canvas over one final result), pre-erase painting
@@ -56,6 +57,7 @@ function initPaintBrush() {
   _brushMode = 'post';
   _brushDirty = false;
   _brushActive = false;
+  _peekingOriginal = false; // fresh erase result — don't inherit peek state from a previous page
 
   const setup = () => {
     _brushCanvas = document.createElement('canvas');
@@ -77,6 +79,52 @@ function initPaintBrush() {
   // loaded the new blob URL — img.src was just reassigned by the caller.
   if (img.complete && img.naturalWidth) setup();
   else img.addEventListener('load', setup, { once: true });
+}
+
+/**
+ * Non-destructive toggle between the erase result and the original,
+ * un-erased page — added because _showErasePreview() (erase-tool.js)
+ * clears the box overlay/sidebar once erase runs, and the only previous
+ * way back to "what did this page look like before" was "clear boxes and
+ * start over", which throws away all box/translation work on the page
+ * too. This changes nothing about that work: it only flips which image
+ * is visible and which layer is on top, using data that was already
+ * sitting in memory (_eraseImgMeta.imgSrc, set once when the page loads
+ * and never overwritten by erase — see erase-tool.js's _loadEraseCurrentPage).
+ *
+ * Two things need to move together, not just #erase-img's src:
+ *   1. #erase-img's src — swapped between _eraseImgMeta.imgSrc (original)
+ *      and the erase result blob URL.
+ *   2. #brush-canvas's visibility — this canvas is a SEPARATE layer drawn
+ *      on TOP of #erase-img (see initPaintBrush above), pre-filled with
+ *      the erase result and holding any brush touch-ups a person has
+ *      already painted. It's the thing actually visible day-to-day once
+ *      brush mode has been used even once, regardless of #erase-img's own
+ *      src underneath — so leaving it visible while #erase-img swaps to
+ *      the original would just show the untouched erase result on top of
+ *      the original, hiding the very thing peek is supposed to reveal.
+ *
+ * Only meaningful in 'post' mode — the pre-erase brush (_brushMode==='pre')
+ * already paints directly over the original page, so there's nothing to
+ * peek "back" to; that toolbar never mounts this button (see
+ * _mountBrushToolbar's pre-mode branch).
+ */
+function _eraseTogglePeekOriginal() {
+  if (_brushMode !== 'post' || !_brushCanvas || !_eraseImgMeta) return;
+  _peekingOriginal = !_peekingOriginal;
+
+  const img = document.getElementById('erase-img');
+  if (img) img.src = _peekingOriginal ? _eraseImgMeta.imgSrc : URL.createObjectURL(_eraseResultBlob);
+
+  _brushCanvas.style.display = _peekingOriginal ? 'none' : '';
+  // Painting "on" the original would be nonsensical (that canvas isn't
+  // what gets exported while peeking at it) — force brush mode off rather
+  // than leave a person paint-armed over the wrong image. Re-enabling
+  // brush mode after un-peeking is a deliberate, explicit action again,
+  // same as it would be on any fresh page load.
+  if (_peekingOriginal && _brushActive) toggleBrushMode();
+
+  _mountBrushToolbar();
 }
 
 /**
@@ -131,9 +179,21 @@ function _mountBrushToolbar() {
   }
   const dirty = _brushMode === 'pre' ? _preBrushDirty : _brushDirty;
   const label = _brushMode === 'pre' ? 'Paint white (pre-erase)' : 'White brush';
+  // Peek only applies in 'post' mode (see _eraseTogglePeekOriginal's doc
+  // comment for why 'pre' has nothing to peek "back" to) — the button is
+  // simply absent from the pre-erase toolbar rather than shown-disabled,
+  // since there's no future state where clicking it would ever do
+  // anything on that page.
+  const peekBtn = _brushMode === 'post' ? `
+    <button id="peek-toggle" class="export-row-btn${_peekingOriginal ? ' active' : ''}"
+      onclick="_eraseTogglePeekOriginal()"
+      title="${_peekingOriginal ? 'Showing the original page — click to go back to the erase result' : 'Briefly show the original, un-erased page for comparison'}">
+      👁 ${_peekingOriginal ? 'Viewing original' : 'Peek original'}
+    </button>` : '';
   bar.innerHTML = `
+    ${peekBtn}
     <button id="brush-toggle" class="export-row-btn${_brushActive ? ' active' : ''}"
-      onclick="toggleBrushMode()" title="Paint white directly over the page — no erase/inpaint needed for the painted area">
+      onclick="toggleBrushMode()" ${_peekingOriginal ? 'disabled title="Go back to the erase result first (click Viewing original) — painting only applies there"' : 'title="Paint white directly over the page — no erase/inpaint needed for the painted area"'}>
       🖌 ${_brushActive ? 'Painting (on)' : label}
     </button>
     <span class="brush-size-row" ${_brushActive ? '' : 'style="display:none"'}>

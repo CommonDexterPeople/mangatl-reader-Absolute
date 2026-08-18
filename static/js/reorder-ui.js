@@ -19,6 +19,9 @@
   // Populate cache info on home screen
   refreshCacheUI();
 
+  // Populate Continue Reading card / recent list on home screen
+  _renderHistoryUI();
+
   // Restore MangaDex login state
   const savedAccess  = localStorage.getItem('mtl_md_access');
   const savedRefresh = localStorage.getItem('mtl_md_refresh');
@@ -51,11 +54,30 @@
   }
   onModelChange();  // restores per-provider key + syncs placeholder + hint + vision group visibility
 
+  // Restore the Vision-OCR-specific Gemini key (only relevant/visible when
+  // DeepL is the active translator — see onModelChange()'s vision-ocr-key-wrap
+  // toggle). Single persisted value, not per-provider like mtl_key_${provider}
+  // above, since this key's whole purpose is to stay available regardless of
+  // which translator is selected.
+  const savedVisionKey = localStorage.getItem('mtl_vision_ocr_key');
+  const visionKeyEl = document.getElementById('vision-ocr-key');
+  if (visionKeyEl && savedVisionKey) {
+    visionKeyEl.value = savedVisionKey;
+  }
+
   // Restore Vision OCR mode — must run AFTER onModelChange so the select exists and is visible
   const savedVisionMode = localStorage.getItem('mtl_vision_mode');
   const visionEl = document.getElementById('vision-ocr-mode');
   if (visionEl && savedVisionMode) {
     visionEl.value = savedVisionMode;
+  }
+
+  // Restore local OCR engine choice (EasyOCR/RapidOCR) — same restore
+  // pattern as Vision OCR mode above, independent setting.
+  const savedLocalEngine = localStorage.getItem('mtl_local_ocr_engine');
+  const localEngineEl = document.getElementById('local-ocr-engine');
+  if (localEngineEl && savedLocalEngine) {
+    localEngineEl.value = savedLocalEngine;
   }
 
   const savedScale = localStorage.getItem('mtl_merge_scale');

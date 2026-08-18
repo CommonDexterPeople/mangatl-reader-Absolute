@@ -1,0 +1,142 @@
+{
+  "_comment": [
+    "Editable $/1M-token rate table for the cost tracker (see Devlog.md,",
+    "'Cost tracking' entry, for the full design rationale).",
+    "",
+    "This file is the source of truth. The Cost Settings panel in the app",
+    "can override individual rates for your own session (e.g. if you're on",
+    "a promo/discount price, or a rate changed since this file was last",
+    "updated) without you needing to edit this file directly — but this",
+    "file is what a fresh install / fresh browser starts from.",
+    "",
+    "Verified directly against each provider's own pricing page on",
+    "2026-08-01 (DeepSeek: api-docs.deepseek.com/quick_start/pricing;",
+    "Gemini: ai.google.dev/gemini-api/docs/pricing, deprecations page, and",
+    "the Gemini 3.6 Flash / 3.5 Flash launch posts). Both providers change",
+    "prices without much notice — DeepSeek has an announced-but-undated",
+    "2x peak-hour multiplier coming (still not live as of this recheck),",
+    "Gemini regularly retires/replaces model tiers — so treat every number",
+    "below as due for a recheck, not as permanently correct. This recheck",
+    "found gemini-3.5-flash's own price unchanged but added a",
+    "gemini-3.6-flash entry (GA 21 Jul 2026, cheaper successor, not yet in",
+    "the app's model picker) since it didn't exist in this file before. If",
+    "a model you use isn't listed, the app falls back to the",
+    "character/image-count estimate instead of a wrong dollar figure.",
+    "",
+    "All rates are USD per 1,000,000 tokens unless the model entry says",
+    "otherwise. cache_hit is DeepSeek's disk-cache discount rate — only",
+    "meaningful for DeepSeek, omit it for Gemini models.",
+    "",
+    "'threshold' entries (Gemini 3.1 Pro) mean: use rate 'input'/'output'",
+    "for prompts <= threshold_tokens, otherwise use 'input_above'/",
+    "'output_above'. Every other model is a flat rate regardless of",
+    "prompt size.",
+    "",
+    "The 'deepl' section is a different UNIT entirely — DeepL bills per",
+    "CHARACTER, not per token (there's no prompt/completion split; it's a",
+    "plain string-in/string-out API, not an LLM) — so its rate is",
+    "'per_million_chars', not 'input'/'output' per-million-tokens like",
+    "every other section here. cost-tracker.js's _deepLCost() reads this",
+    "section specifically rather than going through _tokenCost().",
+    "",
+    "CORRECTION (2026-08-02 recheck): DeepL retired the API Free/API Pro",
+    "plans this section used to describe — confirmed directly from",
+    "support.deepl.com/hc/en-us/articles/360021200939-DeepL-API-plans,",
+    "which states in DeepL's own words: 'The DeepL API Free plan can no",
+    "longer be purchased' and 'The DeepL API Pro plan can no longer be",
+    "purchased.' New signups now go through deepl.com/pro#developer to",
+    "either:",
+    "  - API Developer (free): 1,000,000 characters TOTAL, ONE-TIME —",
+    "    NOT a monthly allowance, does not reset. Confirmed from",
+    "    support.deepl.com/hc/en-us/articles/360020685720 in DeepL's own",
+    "    words: 'With DeepL API Developer, you can translate up to",
+    "    1,000,000 characters in total... To translate more, you can",
+    "    upgrade to DeepL API Growth at any time.'",
+    "  - API Growth (paid): ~$26/month base, 50,000,000 characters/month",
+    "    included (per the same support article), overage billed above",
+    "    that. Structurally different from the old Pro's simple flat",
+    "    per-character rate — has a real monthly cap plus a base fee.",
+    "This app's own /translate-deepl and /deepl-languages routes talk to",
+    "DeepL's real /v2/translate and /v2/languages endpoints either way —",
+    "those endpoints didn't change, only the PLAN NAMES, ALLOWANCE SHAPE,",
+    "and WHETHER THE ALLOWANCE RESETS did. The ':fx' key-suffix convention",
+    "was specifically documented for telling old Free-tier keys apart from",
+    "Pro-tier keys (routing to api-free.deepl.com vs api.deepl.com) — it is",
+    "NOT confirmed whether new Developer-tier keys also use ':fx' or",
+    "route the same way; this app's _deepl_base_url() logic has not been",
+    "re-verified against a real Developer-tier key. If you already hold an",
+    "old-style Free ':fx' key from before this retirement, DeepL's notice",
+    "is about NEW signups — it's unconfirmed here whether an existing key",
+    "still works under its original terms; check your own DeepL account",
+    "dashboard rather than trust this file on that point specifically.",
+    "The free_chars_per_month figure below is kept for backward",
+    "compatibility with any reader still on an old-style key, but a fresh",
+    "DeepL signup today should mentally read it as 'up to 1,000,000",
+    "characters, once, ever' instead."
+  ],
+
+  "deepseek": {
+    "deepseek-v4-flash": {
+      "input":      0.14,
+      "cache_hit":  0.0028,
+      "output":     0.28,
+      "label": "DeepSeek V4 Flash"
+    },
+    "deepseek-v4-pro": {
+      "input":      0.435,
+      "cache_hit":  0.003625,
+      "output":     0.87,
+      "label": "DeepSeek V4 Pro"
+    }
+  },
+
+  "gemini": {
+    "gemini-3.5-flash": {
+      "input":  1.50,
+      "output": 9.00,
+      "label": "Gemini 3.5 Flash",
+      "note": "Own price is unchanged and still GA (no shutdown date announced) — but Google shipped gemini-3.6-flash on 21 Jul 2026 as the new default/cheaper successor (same $1.50 input, $7.50 output). App's model picker (translate-client.js) still only offers 3.5, not 3.6 — that's a separate app-side change, not a rates.json fix. See the gemini-3.6-flash entry below."
+    },
+    "gemini-3.6-flash": {
+      "input":  1.50,
+      "output": 7.50,
+      "label": "Gemini 3.6 Flash",
+      "note": "Not yet in the app's model picker (translate-client.js) — added here so the rate table is correct if/when it's wired up. Released 21 Jul 2026 as 3.5 Flash's cheaper successor; 17% fewer output tokens for the same task per Google's own benchmarks, on top of the lower per-token output rate."
+    },
+    "gemini-3.1-flash-lite": {
+      "input":  0.25,
+      "output": 1.50,
+      "label": "Gemini 3.1 Flash-Lite",
+      "note": "App's UI currently only offers this on the free tier (see freeTierModels in translate-client.js), so real-world cost is usually $0.00 — these are the standalone paid-tier rates in case that changes."
+    },
+    "gemini-2.5-flash": {
+      "input":  0.30,
+      "output": 2.50,
+      "label": "Gemini 2.5 Flash",
+      "note": "Google has this retiring 16 Oct 2026 (per ai.google.dev/gemini-api/docs/pricing) — recheck this entry after that date."
+    },
+    "gemini-3.1-pro-preview": {
+      "threshold_tokens": 200000,
+      "input":       2.00,
+      "output":      12.00,
+      "input_above": 4.00,
+      "output_above": 18.00,
+      "label": "Gemini 3.1 Pro"
+    },
+    "gemini-2.0-flash-lite": {
+      "input":  0.075,
+      "output": 0.30,
+      "label": "Gemini 2.0 Flash-Lite",
+      "note": "Google shut this model down 1 June 2026. It's still referenced as the /vision-crop default in server.py — flagged separately, not fixed here. Kept in this table so cost tracking doesn't silently misprice any in-flight requests still using it."
+    }
+  },
+
+  "deepl": {
+    "deepl": {
+      "per_million_chars": 5.49,
+      "free_chars_per_month": 500000,
+      "label": "DeepL",
+      "note": "STALE — see this file's header comment for the full 2026-08-02 correction. This $5.49/1M-chars flat rate describes the RETIRED API Pro plan. DeepL's current paid tier (Growth) doesn't bill this way at all — it's a ~$26/month base fee with 50,000,000 characters/month included, then overage per extra million above that (approx $27.50/1M per third-party trackers, NOT independently confirmed against DeepL's own pricing page — a base-fee-plus-included-allowance plan can't be represented as a single per_million_chars figure the way this field currently assumes, since a Growth user's real cost is usually just the flat $26/month, not the per-character math _deepLCost() computes). This app's cost tracker will OVER-estimate a Growth user's true cost, since it always applies the pure per-character math below regardless of whether the $26/month base already covers everything sent this month. free_chars_per_month=500000 describes the retired Free plan; the current free tier (Developer) is 1,000,000 characters TOTAL, one-time, never resets — not a monthly figure at all. Needs a real fix (a new plan shape, not just an updated number) once Growth's exact current pricing is independently confirmed."
+    }
+  }
+}

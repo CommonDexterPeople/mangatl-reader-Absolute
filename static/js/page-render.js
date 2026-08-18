@@ -150,9 +150,13 @@ async function _ocrTranslateAndRenderPage(el, pageIdx, total, cdnUrl, imgSrc, so
   const ocrData    = await ocrPage(cdnUrl, sourceLang, undefined, visionModeOverride);
   const ocrResult  = ocrData.regions;
   if (ocrData.visionFallback) {
-    const msgs = { quota: 'Gemini quota hit', error: 'Gemini Vision error', network: 'Network error', parse: 'Vision response unreadable' };
-    toast(`⚠ ${msgs[ocrData.visionFallback] ?? 'Vision OCR error'} — used EasyOCR as fallback.`);
+    // See pipeline.js's matching toast for why this reads ocrData.ocrEngine
+    // instead of hardcoding "EasyOCR" — it was wrong for RapidOCR users.
+    const engineLabel = _ENGINE_LABEL[ocrData.ocrEngine] || 'the local engine';
+    const msgs = { quota: 'Gemini quota hit', error: 'Gemini Vision error', network: 'Network error', parse: 'Vision response unreadable', empty: 'Gemini Vision found no text' };
+    toast(`⚠ ${msgs[ocrData.visionFallback] ?? 'Vision OCR error'} — used ${engineLabel} as fallback.`);
   }
+  maybeShowEngineRecommendation(sourceLang, ocrData.localEngineRecommendation);
   // Store raw data so the correction UI can access it
   _pageStore.set(`${_activeChapterId}_${pageIdx}`, {
     cdnUrl, imgSrc, sourceLang, total,
@@ -198,18 +202,28 @@ async function _ocrTranslateAndRenderPage(el, pageIdx, total, cdnUrl, imgSrc, so
 // slower than just starting over. Discards every existing region for this
 // page and re-runs OCR with vision_mode forced to 'all' (Gemini Vision for
 // every region, not just the "smart"-list languages), then retranslates
-// from scratch in one batch call. Requires a Gemini key — DeepSeek-only
-// users have no Vision OCR available server-side (see server.py's /ocr
-// route: ai_key is only ever sent when provider === 'gemini').
+// from scratch in one batch call. Requires a Gemini key from SOME source —
+// either the main ai-key field (when Gemini is the translator) or the
+// separate vision-ocr-key field (when DeepL is the translator — see
+// ocr-client.js's ocrPage() for the full reasoning on why DeepL mode needs
+// its own key field here). DeepSeek-only users still have no Vision OCR
+// available at all (see server.py's /ocr route docstring and
+// translate-client.js's onModelChange(), which hides the whole Vision OCR
+// settings group for DeepSeek specifically).
 // ══════════════════════════════════════════════
 async function redoPageWithVision(pageIdx) {
   const info = getModelInfo();
-  if (info.provider !== 'gemini') {
-    toast('Redo with Vision needs a Gemini API key/model — switch AI Model to a Gemini option first.');
+  const key = info.provider === 'gemini'
+    ? document.getElementById('ai-key')?.value?.trim()
+    : info.provider === 'deepl'
+    ? document.getElementById('vision-ocr-key')?.value?.trim()
+    : '';
+  if (!key) {
+    toast(info.provider === 'deepl'
+      ? 'Redo with Vision needs a Gemini key — add one under Vision OCR in Reading Preferences.'
+      : 'Redo with Vision needs a Gemini API key/model — switch AI Model to a Gemini option, or add one under Vision OCR in Reading Preferences if using DeepL.');
     return;
   }
-  const key = document.getElementById('ai-key')?.value?.trim();
-  if (!key) { toast('Enter your Gemini API key first.'); return; }
 
   const pd = _pageStore.get(`${_activeChapterId}_${pageIdx}`);
   if (!pd) { toast('No page data for this page yet.'); return; }
@@ -222,10 +236,11 @@ async function redoPageWithVision(pageIdx) {
     const { regions } = await _ocrTranslateAndRenderPage(
       el, pageIdx, pd.total, pd.cdnUrl, pd.imgSrc, pd.sourceLang, 'all'
     );
-    // Clear any saved ✏ CORRECT edits for this page — they were corrections
-    // against the OLD (EasyOCR) region set, which no longer exists, so
-    // keeping them around would silently resurrect stale boxes the next
-    // time this page is opened in the correction UI.
+    // Eagerly clear any saved ✏ CORRECT draft for this page now, at the
+    // moment we know the region set just changed — belt-and-suspenders on
+    // top of the general staleness check in _initWorkingRegions (see
+    // _corrSourceSignature), which would also catch this the next time
+    // Correct is opened even without this explicit clear.
     try { localStorage.removeItem(`mtl_corr_${_activeChapterId}_${pageIdx}`); } catch {}
     toast(regions.length
       ? `Redone with Vision — ${regions.length} region(s).`

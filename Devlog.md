@@ -14,6 +14,8 @@ actually navigate, edit, and get real syntax highlighting for. Nothing about
 │       ├── state-and-constants.js   globals + language-name table
 │       ├── cache.js                 localStorage chapter cache + its UI
 │       ├── utils.js                 runConcurrent, toast/status, esc(), nav
+│       ├── cost-tracker.js          per-call $ cost accounting (translate,
+│       │                              OCR Vision, vision-crop) + Cost Settings UI
 │       ├── mangadex-api.js          chapter/page fetch, adjacent-chapter lookup
 │       ├── local-source.js          local-folder/CBZ input — the non-MangaDex
 │       │                              counterpart to mangadex-api.js (see below)
@@ -122,6 +124,34 @@ internal/local hosts. If your Suwayomi instance runs somewhere other than
 `suwayomi-api.js` to match — both sides compare the literal host:port
 string, so e.g. `localhost:4567` and `127.0.0.1:4567` are NOT
 interchangeable; use the same one on both sides.
+
+## Suwayomi wired into the Erase Tool
+
+Follow-through on the "not wired into the Erase Tool yet" note above. No
+server-side change needed this time — `_validate_image_url()`'s
+`SUWAYOMI_HOST` carve-out already covers `/proxy` regardless of which screen
+is calling it, and `chapterFromSuwayomi()` already returned the same
+`{id, kind, title, sourceLang, pages: [{cdn, img}]}` shape
+`_loadEraseLocalChapter()` (erase-tool.js) was written against generically
+from the start. So this was purely additive on the frontend: a
+"Suwayomi (self-hosted)" collapsible section on the Erase Tool screen,
+mirroring the home screen's one field-for-field (`erase-suwayomi-manga-id`,
+`erase-suwayomi-chapter-index`, `erase-suwayomi-source-lang`, kept as
+separate ids/elements from the home screen's own — same reason
+`erase-local-source-lang` exists alongside the main reader's
+`local-source-lang` instead of sharing one), and
+`toggleEraseSuwayomiSource()` / `loadEraseFromSuwayomi()` in `erase-tool.js`,
+mirroring `pipeline.js`'s `toggleSuwayomiSource()` / `loadFromSuwayomi()`
+one-for-one except the last line: instead of
+`startPipelineWithSuwayomiSource(chapter)` it calls the already-generic
+`_loadEraseLocalChapter(chapter)` — the same function the local-folder/CBZ
+path already calls, unchanged.
+
+Confirmed `isLocalRef()`'s blob-cleanup check
+(`cdnRef.startsWith('local-blob:')`) correctly no-ops for Suwayomi pages,
+since their `cdn` is a real `http://127.0.0.1:4567/...` URL, not a
+`local-blob:` ref — so switching from a Suwayomi chapter to a local
+folder/CBZ (or back) can't leak or double-free anything either direction.
 
 ## Local Folder / CBZ input
 
@@ -284,3 +314,163 @@ you rebuild.
 ```
 python build.py --output dist/MyCustomName.py   # optional: custom output path
 ```
+
+## Cost tracking: real $ per chapter + lifetime, not a guess
+
+The README used to say DeepSeek costs "roughly $0.02–0.05 per chapter" — a
+guess, never actually measured. This closes that gap: every paid call now
+reports what it actually cost.
+
+**Backend.** All three paid call sites were silently discarding the
+provider's usage data before this:
+- `_translate_deepseek` rebuilds a minimal `{"choices":[...]}` response
+  (see its own comment on why — the DeepSeek-thinking-mode JSON rescue),
+  and `usage` fell off the edge in that rebuild even though DeepSeek's real
+  response always includes it.
+- `_translate_gemini` normalizes Gemini's response shape to match
+  DeepSeek's; `usageMetadata` wasn't part of that normalization.
+- `_ocr_gemini_vision` (Gemini Vision OCR) and `vision_crop` (manual ✦
+  Vision crop) never looked at usage at all.
+
+All four now thread usage through, normalized to one shared shape
+(`{prompt_tokens, completion_tokens, total_tokens}`, plus DeepSeek's
+`prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` when present) so the
+frontend doesn't need per-provider branching. `_ocr_gemini_vision`
+specifically threads usage through **every** return path, including
+"parse"/"empty" fallbacks — Gemini still billed for those, even though the
+result was unusable, so skipping them would silently undercount.
+
+**Rates live in `rates.json`, not in code.** Provider pricing genuinely
+doesn't hold still — DeepSeek has an announced 2x peak-hour multiplier
+coming, Gemini retires/replaces model tiers regularly (checked against
+both providers' own pricing pages while building this: Gemini 2.5 Flash is
+already flagged for an Oct 2026 retirement, and `gemini-2.0-flash-lite` —
+still referenced as `/vision-crop`'s docstring example default in
+`server.py` — was shut down by Google on June 1, 2026 and left running in
+that comment; not fixed here, flagged as a separate loose end). Hardcoding
+rates into `cost-tracker.js` would be wrong within weeks. `rates.json` is
+the source of truth; a per-model override table (Cost Settings modal, in
+`cost-tracker.js`) layers session-only edits on top without touching the
+file itself.
+
+**The single-file dist build needed its own fix.** `build.py` had zero
+awareness of `rates.json` — it only ever inlined `index.html`/`style.css`/
+`static/js/*.js`. Shipped as-is, `dist/MangaTL-Reader.py`'s `/rates` route
+would 404 for anyone using the single-file build, since there'd be no
+`rates.json` anywhere near it. Fixed the same way `_HTML` already gets
+inlined: `server.py` now has an empty `_RATES_DEFAULT = {}` placeholder
+that `get_rates()` falls back to only if no `rates.json` is found on disk;
+`build.py` replaces that placeholder with `rates.json`'s real parsed
+contents at build time. Verified by booting the built dist file in a
+directory containing *only* that one file (no `rates.json`, no `static/`)
+and confirming `/rates` still serves correct data from the baked-in
+fallback — then dropping a `rates.json` next to it and confirming that
+correctly took priority instead. CI's `build-check` job now also asserts
+`_RATES_DEFAULT` isn't still the empty placeholder after a build, so this
+specific class of "new file type build.py doesn't know about" gap can't
+silently reappear.
+
+**UI.** Two running totals — this chapter (resets on chapter load, both on
+the main reader and the Erase Tool) and lifetime (persists in
+`localStorage`, same trust boundary as this app's API keys) — shown as
+small badges rather than a dashboard; this is a personal tool, not an
+analytics product. Clicking either opens Cost Settings: per-model rate
+editing (mirrors `rates.json`'s structure, including Gemini 3.1 Pro's
+`>200k`-token threshold pricing and DeepSeek's cache-hit discount) and a
+lifetime reset. Falls back to a rough character-count estimate — visibly
+marked with a `*`, never presented as exact — for the case where a call
+returns no usage data at all; shouldn't happen for any of the three wired
+call sites today, but kept as a safety net rather than assuming the
+provider response shape never changes upstream.
+
+## RapidOCR: second local OCR engine
+
+Added as a selectable local engine alongside EasyOCR — `local_engine`
+param on `/ocr`, `'easyocr'` (default, unchanged) or `'rapidocr'`.
+Full reasoning and the comparison data behind it is in ROADMAP.md, not
+duplicated here — this entry is the implementation notes.
+
+`_run_rapidocr_detection()` mirrors `_run_easyocr_detection()`'s exact
+shape and reuses all the same shared helpers (`_find_panel_borders`,
+`_find_bubble_components`, `_preprocess_for_ocr`, `_merge_bubble_regions`)
+— only the actual OCR call and its zero-box retry differ, since those are
+the only genuinely engine-specific pieces. `_get_rapidocr_engine()` is a
+single shared singleton with no per-language keying, unlike
+`_get_reader()` — RapidOCR's bundled default model already covers a
+unified multi-language set (es/pt/vi/tr/id/ja among others — see below for
+which languages that set does *not* include).
+
+**Found a real bug during first verification, not while writing the code**
+— see KNOWN_ISSUES_DRAFT.md's "Confirmed, blocking" entry.
+`_merge_bubble_regions`'s adaptive merge margin, tuned against EasyOCR's
+coarser fragmentation, over-merges adjacent bubbles when fed RapidOCR's
+finer per-line fragments. Reproduced directly (two bubbles' dialogue
+interleaved into one region on a real Portuguese page), root-caused
+(confirmed the raw fragments are correct — the corruption happens inside
+the merge step), not yet fixed. **The frontend engine-selection toggle is
+deliberately not wired live yet because of this** — don't expose a choice
+that can silently produce garbled dialogue.
+
+## Eval script + first real multi-language batch
+
+Built `eval_ocr_engines.py` — runs both engines against a folder of
+`<lang>_whatever.ext` files using the app's real preprocessing/params/
+min_conf (not library defaults), reports fragment counts/timing, dumps
+full transcriptions to JSON for human review. This is the "real eval
+script" ROADMAP.md item 3 called for — the recommendation table was
+previously based on one page per language tested manually in chat; this
+is the reusable tool to keep growing that sample instead of re-doing
+manual testing each time.
+
+`eval_samples/` in the repo is the first real batch — 10 pages across
+es/pt/id/ko/ja/tr, several of them genuinely new territory:
+
+- **Korean was decisive, not a "close call."** RapidOCR's output was
+  total noise (`'0L今..'`, `'武'`, `'HK'`) — not lower accuracy, no
+  usable signal at all. Root cause: Korean isn't in RapidOCR's bundled
+  multi-language model the way es/pt/vi/tr/id/ja are — confirmed against
+  RapidOCR's own model-list docs, not just inferred from bad output.
+  EasyOCR on the same page produced mostly-correct, legible Korean
+  (`이 녀석들` / `끝도 없이` / `여기서 멈출 순` / `없어!`, with a couple
+  of single-character slips like `제기락` for `제기랄!`). Added `ko` to
+  `_LOCAL_ENGINE_RECOMMENDATION` as a hard call, unlike the softer
+  vi/pt entries — Korean already routes to Vision by default regardless
+  (`VISION_LANGS`), but if Vision ever falls back mid-chapter, the local
+  fallback must not silently be RapidOCR.
+
+- **Japanese, unexpectedly, was near-perfect on RapidOCR** — every
+  fragment on a raw (untranslated) test page came back correct. Makes
+  sense in hindsight: `japan` is in RapidOCR's bundled multi-language set,
+  same as Korean is not. Not decision-relevant today (raw Japanese isn't
+  this app's use case, and `ja` already routes to Vision), but worth
+  knowing this isn't "RapidOCR is bad at CJK" — it's specifically about
+  which languages happen to be in the one bundled model.
+
+- **Indonesian, tested for the first time: leaning RapidOCR, not
+  confirmed enough to add a recommendation entry yet.** RapidOCR read
+  common words perfectly (`AKU`, `KALAU`, `ITU`, `NUANSA`) and only
+  scrambled two isolated harder words (`HOBI`→`IBOH`,
+  `kece-plosan`→`kece-uesold`). EasyOCR on the *same* page got those two
+  specific words right but introduced a systematic U-misread-as-L/V
+  across most of the page (`AKU`→`AKL`, `KALAU`→`KALAV`, `NUANSA`→
+  `NLANSA`) — a much more common letter than the two words it fixed.
+  Net read: probably RapidOCR, but one page isn't the bar this project
+  holds itself to for adding a hard recommendation (see the `es`/`tr`
+  precedent) — needs another page or two.
+
+- **Spanish, now tested across 5 pages instead of 2, confirms the earlier
+  read and adds one new observation:** the `¡→i` misread and the
+  scattered accent-dropping (`PODRIAN`, `ATENCION`, `CUANTO`, etc.) show
+  up again, consistently, across new pages — not a fluke from the first
+  two. New finding: pages using a stylized/cursive/handwritten-style font
+  for emphasis panels (as opposed to the standard bold block-caps used
+  everywhere else) had a visibly higher garbling rate
+  (`'PEONONM'`, `'ANSTDE'`, `'ELGPPIPITU-LO'`) than the block-caps
+  majority of the same pages. Not yet confirmed against EasyOCR on the
+  same stylized-font pages — worth checking whether this is a RapidOCR-
+  specific weakness or a hard case for both engines.
+
+**Not re-tested this round:** Portuguese and Turkish, both already had a
+tested page in `eval_samples/` from the prior session and didn't need
+re-confirming; Vietnamese, already decisively tested and not worth
+re-spending EasyOCR's much slower runtime on without new pages to test.

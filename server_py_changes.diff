@@ -1,0 +1,105 @@
+--- /home/claude/mangatl_orig/server.py	2026-08-04 16:10:08.000000000 +0000
++++ /home/claude/mangatl/server.py	2026-08-04 08:41:33.070885316 +0000
+@@ -2312,6 +2312,25 @@
+       would refuse) — see _profile_confirms_gap's docstring for why that's
+       the safe default when the profile itself is inconclusive.
+ 
++      HORIZONTAL_GAP_FACTOR (NEW) is the horizontal counterpart to
++      LINE_GAP_FACTOR — margin(i) is now actually TWO values per box,
++      margin_v(i) = height(i) x margin_scale x LINE_GAP_FACTOR and
++      margin_h(i) = height(i) x margin_scale x HORIZONTAL_GAP_FACTOR,
++      expanding each box by margin_v vertically and margin_h horizontally
++      rather than one shared value in every direction. HORIZONTAL_GAP_FACTOR
++      is deliberately much smaller than LINE_GAP_FACTOR: the only legitimate
++      same-bubble reason to bridge a horizontal gap is staggered/zigzag
++      lettering inside one narrow bubble, whose real gap is tight same-
++      bubble spacing, not line-height. Unlike the vertical case,
++      _profile_confirms_gap's ink-valley technique CANNOT do double duty
++      here as a secondary check — a clean gap reads identically whether
++      it's a normal word-space inside one bubble or open panel background
++      between two different bubbles — so horizontal reach has to stay
++      tight geometrically instead of leaning on a pixel-content veto to
++      catch mistakes after the fact. See the constant's own comment above
++      for the specific bug this fixes and its current (unvalidated)
++      starting value.
++
+     Panel border guard (h_borders / v_borders):
+       Even if two expanded boxes overlap, they will NOT be merged if a detected
+       panel border line lies in the gap between them.  This prevents speech
+@@ -2330,14 +2349,60 @@
+     # bubbles showed is normal line spacing, not an outlier.
+     LINE_GAP_FACTOR = 1.6
+ 
+-    is_webtoon = (img_h / max(img_w, 1)) > 2.0
+-    eff_scale  = margin_scale * LINE_GAP_FACTOR * (0.6 if is_webtoon else 1.0)
++    # NEW — separate, tighter calibration for HORIZONTAL reach. See
++    # KNOWN_ISSUES_DRAFT.md, "Confirmed, blocking: _merge_bubble_regions
++    # over-merges adjacent bubbles on RapidOCR's fragment output" for the
++    # real-page bug this addresses.
++    #
++    # Until now, horizontal and vertical reach shared one LINE_GAP_FACTOR-
++    # derived margin. That's correct for genuine same-bubble LINE-to-LINE
++    # (vertical) gaps — what LINE_GAP_FACTOR was tuned against — but the
++    # only legitimate reason this function ever needs to bridge a HORIZONTAL
++    # gap is the "staggered lettering" pattern (two sub-columns of one
++    # sentence zigzagging down a single narrow bubble — see the stacked-pair
++    # comment below), and that pattern's real horizontal gap is tight
++    # same-bubble spacing, nothing like a full line-height. Reusing the
++    # line-spacing constant for horizontal reach meant it could ALSO bridge
++    # the real physical gap between two separate, adjacent bubbles —
++    # bubble-fill padding + border ink + the other bubble's own padding —
++    # which is exactly the confirmed RapidOCR bug. RapidOCR's smaller, more
++    # numerous fragments made this likelier to get hit in practice (more
++    # fragment pairs land near the boundary), but the underlying issue — one
++    # factor doing two jobs with different real-world scales — isn't
++    # engine-specific, so this fix applies to both engines' margins alike.
++    #
++    # NOTE: this is deliberately a GEOMETRIC fix, not a pixel-content one.
++    # The obvious first idea — reuse _profile_confirms_gap's ink-valley
++    # technique for horizontal gaps the way it already works for vertical
++    # ones — does NOT work here: a clean whitespace gap looks pixel-
++    # identical whether it's a normal word-space INSIDE one bubble or page/
++    # panel background BETWEEN two different adjacent bubbles. Ink density
++    # can't tell those apart; only the gap's SIZE relative to normal
++    # same-bubble spacing can, which is what this constant controls.
++    #
++    # UNVALIDATED STARTING VALUE — chosen conservatively small relative to
++    # LINE_GAP_FACTOR, not yet measured against real pages. Needs checking
++    # against (a) the RapidOCR Brazil_raw.jpg case (confirm the two bubbles
++    # no longer merge) and (b) a real staggered-lettering page (confirm that
++    # legitimate merge still succeeds) before this is trusted — same bar
++    # every other constant in this file is held to.
++    HORIZONTAL_GAP_FACTOR = 0.5
++
++    is_webtoon  = (img_h / max(img_w, 1)) > 2.0
++    eff_scale_v = margin_scale * LINE_GAP_FACTOR       * (0.6 if is_webtoon else 1.0)
++    eff_scale_h = margin_scale * HORIZONTAL_GAP_FACTOR * (0.6 if is_webtoon else 1.0)
+ 
+     # Per-box margin: each box reaches only as far as its OWN height implies,
+     # rather than every box on the page sharing one page-wide median-derived
+-    # value. See docstring above for why this matters.
+-    margins = [max(4, int((boxes[i][3] - boxes[i][1]) * eff_scale))
+-               for i in range(len(boxes))]
++    # value. See docstring above for why this matters. Split into vertical/
++    # horizontal components (NEW) so the two directions use their own
++    # calibration; both still scale off the box's own HEIGHT in either case
++    # (not width) since height is what tracks font size / line spacing
++    # regardless of which direction reach is being measured in.
++    margins_v = [max(4, int((boxes[i][3] - boxes[i][1]) * eff_scale_v))
++                 for i in range(len(boxes))]
++    margins_h = [max(4, int((boxes[i][3] - boxes[i][1]) * eff_scale_h))
++                 for i in range(len(boxes))]
+ 
+     # ── Union-Find ────────────────────────────────────────────────────────────
+     n      = len(boxes)
+@@ -2501,8 +2566,8 @@
+ 
+     def expanded(i):
+         x1, y1, x2, y2, _ = boxes[i]
+-        m = margins[i]
+-        return (x1 - m, y1 - m, x2 + m, y2 + m)
++        mv, mh = margins_v[i], margins_h[i]
++        return (x1 - mh, y1 - mv, x2 + mh, y2 + mv)
+ 
+     def overlaps(a, b):
+         ax1, ay1, ax2, ay2 = a

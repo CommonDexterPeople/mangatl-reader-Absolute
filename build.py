@@ -54,6 +54,8 @@ def build(output_path: Path) -> None:
     server_src = _read(HERE / "server.py")
     index_html = _read(STATIC / "index.html")
     style_css = _read(STATIC / "style.css")
+    rates_json_path = HERE / "rates.json"
+    rates_json = _read(rates_json_path) if rates_json_path.exists() else None
 
     js_files = _js_order_from_html(index_html)
     if not js_files:
@@ -91,6 +93,30 @@ def build(output_path: Path) -> None:
             first_replaced = True
         else:
             html = html.replace(tag, "", 1)
+
+    # Inline rates.json the same way _HTML gets inlined below: replace the
+    # empty _RATES_DEFAULT = {} placeholder in server.py with the real,
+    # parsed contents of rates.json, so the single-file dist build has a
+    # working cost-tracker rate table even with no rates.json sitting next
+    # to it (get_rates() in server.py still prefers an on-disk rates.json
+    # if the person running the dist build adds one — this is only the
+    # fallback for when they don't).
+    if rates_json is not None:
+        try:
+            import json as _json
+            parsed_rates = _json.loads(rates_json)
+        except ValueError as e:
+            raise SystemExit(f"rates.json exists but isn't valid JSON: {e}")
+        rates_literal = "_RATES_DEFAULT = " + repr(parsed_rates) + "\n"
+        if "_RATES_DEFAULT = {}\n" not in server_src:
+            raise SystemExit(
+                "Couldn't find the _RATES_DEFAULT = {} placeholder in server.py — "
+                "did get_rates()'s fallback mechanism change?"
+            )
+        server_src = server_src.replace("_RATES_DEFAULT = {}\n", rates_literal, 1)
+    else:
+        print("  WARNING: rates.json not found — dist build's cost tracker will have "
+              "no default rates until one is added next to the dist file.")
 
     # server.py currently serves the frontend from disk via send_from_directory.
     # For the single-file build we need the ORIGINAL in-memory-string behavior:
@@ -167,6 +193,8 @@ def build(output_path: Path) -> None:
     print(f"Built {output_path}  ({lines} lines)")
     print(f"  inlined {len(js_files)} JS module(s): {', '.join(js_files)}")
     print(f"  inlined style.css ({style_css.count(chr(10))} lines)")
+    if rates_json is not None:
+        print(f"  inlined rates.json as _RATES_DEFAULT ({rates_json.count(chr(10))} lines)")
 
 
 def main():

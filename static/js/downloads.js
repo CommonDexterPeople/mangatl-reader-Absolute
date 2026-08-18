@@ -39,6 +39,13 @@ function _listCachedChapters() {
         targetLang: d.targetLang || '',
         pageCount, translatedCount,
         timestamp: d.timestamp || 0,
+        // Kept (previously discarded here) so openCachedChapter() below
+        // can build a resume descriptor without a second read of the raw
+        // cache entry — see that function's doc comment for why a cached
+        // chapter needs the same {kind, mangaId/sourceLang} split
+        // history.js's resume descriptors already use.
+        mangaId: d.meta.mangaId || null,
+        sourceLang: d.meta.translatedLanguage || '',
       });
     } catch { /* skip corrupt entry */ }
   }
@@ -62,18 +69,58 @@ function _renderChapterList() {
   wrap.style.display = '';
 
   wrap.innerHTML = chapters.map(ch => `
-    <div class="chlist-row" id="chrow-${ch.chapterId}">
+    <div class="chlist-row hist-row" id="chrow-${ch.chapterId}" onclick="openCachedChapter('${ch.chapterId}')">
       <div class="chlist-info">
         <div class="chlist-title">${esc(ch.title)}</div>
         <div class="chlist-sub">Ch. ${esc(ch.chapter)}${ch.chapterTitle ? ' · ' + esc(ch.chapterTitle) : ''}
           &nbsp;·&nbsp; ${ch.translatedCount}/${ch.pageCount} pages &nbsp;·&nbsp; ${esc(ch.targetLang)}</div>
       </div>
       <button class="chlist-dl-btn" id="chdl-btn-${ch.chapterId}"
-              onclick="downloadCachedChapter('${ch.chapterId}')" title="Download this chapter">
+              onclick="event.stopPropagation(); downloadCachedChapter('${ch.chapterId}')" title="Download this chapter">
         ⬇
       </button>
     </div>
   `).join('');
+}
+
+/**
+ * Opens a cached chapter straight into the reader — click anywhere on its
+ * row except the ⬇ button (which still just downloads, unchanged).
+ *
+ * Builds a one-off {resume, entry}-shaped pair from THIS chapter's own
+ * cache data and hands it to history.js's _dispatchResume() — the exact
+ * same dispatcher resuming from actual reading history uses — rather
+ * than a second copy of the mangadex/suwayomi/local branching. See
+ * _dispatchResume's doc comment for why cached chapters need their own
+ * on-the-fly pair instead of just reading a matching mtl_hist_* entry
+ * (there may not be one — the two stores are independent, can each
+ * evict/expire on their own, and a chapter can be cached without ever
+ * having been opened as a fresh read in this browser, e.g. after
+ * "download all" for a chapter list).
+ *
+ * kind is inferred from chapterId's own shape rather than stored
+ * separately: Suwayomi's composite id (`suwayomi:<mangaId>:<index>`,
+ * see suwayomi-api.js's chapterFromSuwayomi) always contains a colon; a
+ * MangaDex chapter id is a plain UUID and never does. Local/CBZ chapters
+ * are never cached at all (pipeline.js passes cacheable:false for that
+ * source specifically — blobs don't survive a reload, see
+ * _runChapterPipeline's own doc comment), so 'local' never needs to be
+ * handled here.
+ */
+function openCachedChapter(chapterId) {
+  const parts = chapterId.split(':');
+  const resume = (parts.length === 3 && parts[0] === 'suwayomi')
+    ? { kind: 'suwayomi', mangaId: parts[1], chapterIndex: parts[2], sourceLang: '' }
+    : { kind: 'mangadex', chapterId };
+
+  const cached = getCachedChapter(chapterId);
+  if (!cached?.meta) { toast('That cached chapter is gone or has expired.'); refreshCacheUI(); return; }
+  if (resume.kind === 'suwayomi') resume.sourceLang = cached.meta.translatedLanguage || 'ja';
+
+  _dispatchResume(resume, {
+    title: cached.meta.mangaTitle || 'Unknown Manga',
+    targetLang: cached.targetLang || document.getElementById('target-lang')?.value || 'en',
+  });
 }
 
 // ══════════════════════════════════════════════
