@@ -58,7 +58,7 @@ and it hands you back the same chapter, readable in your language, in your brows
 - Pull a chapter straight from your own self-hosted [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) instance, alongside MangaDex and local folder/CBZ as a third chapter source
 - Same OCR → translate → correct → export pipeline as any other source — nothing about reading, correcting, or exporting a chapter behaves differently once it's loaded
 - Chapters loaded this way are cached the same as MangaDex chapters (unlike local folder/CBZ, whose pages don't survive a reload — see above): a Suwayomi chapter's pages are real, re-fetchable URLs against your own server, so there's no downside to keeping the cache entry
-- Not yet wired into the standalone Erase Tool — MangaDex and local folder/CBZ only there for now
+- Also available as a source in the standalone Erase Tool, alongside MangaDex and local folder/CBZ (see below)
 
 ### Manual correction & QA
 - **✏ Correct UI** — draw, split, merge, delete, and reorder bubble regions by hand when the automatic pass gets something wrong
@@ -82,8 +82,7 @@ and it hands you back the same chapter, readable in your language, in your brows
 
 ### Standalone Erase Tool
 - A separate screen for just cleaning a page — erase the original text, draw nothing back — for anyone who wants to do their own typesetting from scratch
-- Works from a MangaDex chapter URL or your own local folder/CBZ, same as the main reader
-- Suwayomi chapters aren't wired in here yet (see [Known limitations](#known-limitations))
+- Works from a MangaDex chapter URL, your own local folder/CBZ, or a self-hosted Suwayomi-Server instance — the same three sources the main reader supports
 
 ### MangaDex integration
 - Optional OAuth login, attaching your account to API requests (useful for rate limits and anything gated to logged-in users)
@@ -145,8 +144,7 @@ Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly wh
 ## Known limitations
 
 - Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
-- The standalone Erase Tool accepts MangaDex and local-folder/CBZ input, but not Suwayomi chapters yet.
-- No automated test suite yet.
+- `test_ssrf_guard.py` and `test_deepseek_rescue.py` cover the SSRF allowlist and the DeepSeek JSON-rescue heuristic; there's no broader test suite beyond those two yet. Both run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS file and a `build.py` smoke test.
 
 ---
 
