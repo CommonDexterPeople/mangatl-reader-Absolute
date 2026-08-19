@@ -1,10 +1,17 @@
 name: CI
 
-# Runs the project's existing test suites on every push and PR.
-# Both test_*.py files are intentionally stdlib-only (they extract the
-# logic under test straight out of server.py via source parsing, rather
-# than importing the whole module) — so this workflow needs no
-# `pip install` step at all and finishes in seconds.
+# Runs the project's test suites on every push and PR.
+#
+# The tests import server.py directly (importlib) and call the real
+# functions. That works because server.py's dependency auto-installer is
+# guarded behind `if __name__ == "__main__"` — importing the module never
+# shells out to pip. They therefore need server.py's MODULE-SCOPE deps
+# installed, which is the short list below.
+#
+# Deliberately NOT installed: easyocr, rapidocr, torch. Those are loaded
+# lazily inside _get_reader() / _get_rapidocr_engine() / _get_lama_engine(),
+# and no test reaches them — so CI stays at a ~100 MB install that finishes
+# in seconds instead of a multi-GB torch pull.
 
 on:
   push:
@@ -12,6 +19,10 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+env:
+  # server.py's module-scope imports, and nothing else.
+  SERVER_DEPS: flask requests opencv-python-headless numpy pillow
 
 jobs:
   python-tests:
@@ -28,11 +39,41 @@ jobs:
       - name: server.py syntax check
         run: python3 -c "import ast; ast.parse(open('server.py').read())"
 
+      - name: Install server.py's module-scope dependencies
+        run: python3 -m pip install --quiet $SERVER_DEPS
+
+      - name: Confirm server.py imports without triggering the pip bootstrap
+        # Regression guard for the __main__ guard itself: if someone ever
+        # un-guards _bootstrap(), this step hangs/installs instead of
+        # returning instantly, and every test below goes back to needing
+        # source-scraping hacks to avoid it.
+        run: |
+          python3 - <<'PY'
+          import importlib.util, sys
+          spec = importlib.util.spec_from_file_location("mangatl_server", "server.py")
+          m = importlib.util.module_from_spec(spec)
+          sys.modules["mangatl_server"] = m
+          spec.loader.exec_module(m)
+          for fn in ("_is_allowed_image_host", "_rescue_json_from_reasoning",
+                     "_merge_bubble_regions", "typeset_page"):
+              assert hasattr(m, fn), f"server.py no longer exposes {fn}"
+          print("server.py imported cleanly")
+          PY
+
       - name: SSRF guard tests (test_ssrf_guard.py)
         run: python3 test_ssrf_guard.py
 
       - name: DeepSeek rescue regression tests (test_deepseek_rescue.py)
         run: python3 test_deepseek_rescue.py
+
+      - name: Side-by-side bubble merge tests (test_side_by_side_bubble_merge.py)
+        run: python3 test_side_by_side_bubble_merge.py
+
+      - name: Bubble outline tracing tests (test_bubble_outline_tracing.py)
+        run: python3 test_bubble_outline_tracing.py
+
+      - name: Fused bubble waist tests (test_fused_bubble_waist.py)
+        run: python3 test_fused_bubble_waist.py
 
       - name: innerHTML escaping audit (informational — does not fail the build)
         run: python3 audit_innerhtml.py

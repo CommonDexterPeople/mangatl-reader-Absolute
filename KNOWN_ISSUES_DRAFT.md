@@ -316,3 +316,338 @@ for trustworthy claims — test the *live* logic, not a hand-copied
 duplicate — needs to extend to "and confirm that logic actually made it
 back into the tracked source," not just that it was tested somewhere at
 some point.
+
+---
+
+## Fix attempt #3 for the same bug: outline tracing in `_find_bubble_components`
+
+**Status: implemented, logic-tested, tested against synthetic image data
+reproducing the reported failure's characteristics. NOT yet verified
+against the real Brazil_raw.jpg page** — this environment doesn't have a
+copy of it. Do not treat this as closed until that verification happens;
+this file's own established bar (see fix attempt #2 above, which passed
+its synthetic test and then failed on the real page) is the reason this
+entry is this explicit about what has and hasn't been checked.
+
+**Why margin-tuning (fix attempt #2, directly above) couldn't work — the
+diagnosis that motivated this attempt:** fix attempt #2 proved, with a
+real number from the real page, that no `HORIZONTAL_GAP_FACTOR` value can
+separate the two cases it needs to separate — the real illegitimate gap
+between different bubbles (1.0px) is *smaller* than the real legitimate
+gap a same-bubble merge needs to preserve (5px). That's not a mistuned
+constant, it's two real constraints that can't both be satisfied by one
+geometric threshold. Which means the bug was never really in the merge
+*margin* — it was upstream, in `_find_bubble_components`'s label map
+itself reporting ONE component where the real page has two. No amount of
+correct downstream logic (margin tuning, or `_crosses_bubble_boundary`'s
+sampling, which was already tested and correct) can recover a boundary
+that the segmentation step never detected in the first place.
+
+**What actually causes the label map to be wrong:** `_find_bubble_components`
+classifies a pixel as bubble-fill using box-filtered Laplacian variance
+(9x9 kernel) thresholded at 40.0 — deliberately coarse, since it's a
+page-wide, one-time flatness pass. A thin (1-3px) or low-contrast dividing
+line between two adjacent, similarly-bright bubbles gets diluted by that
+averaging: the 9x9 window mostly sees flat fill on both sides of the line,
+so the averaged variance can land under 40.0 even directly on top of the
+line. The line effectively disappears from the flatness signal, and the
+two bubbles' fills read as one connected component.
+
+**Fix:** a new function, `_bubble_outline_mask`, runs `cv2.adaptiveThreshold`
+(Gaussian-weighted local mean, block_size=15, C=7) over the same grayscale
+page — a genuinely different signal from the box-filtered flatness test:
+instead of "how much does intensity vary in a neighbourhood," it asks "is
+this pixel darker than its own local neighbourhood's mean," which is
+exactly what a thin ink line is, however faint, as long as it's genuinely
+darker than the paper immediately around it. The result (dilated 1px, so
+it's topologically solid against 8-connected flood fill) is subtracted
+from the flat+light candidate mask *before* `cv2.connectedComponents`
+runs, in `_find_bubble_components`. This is purely subtractive — it can
+only remove candidate pixels, never add them — so it can narrow an
+existing component into two, but can never merge two components the old
+flatness-only mask would have kept separate. That asymmetry means the fix
+has no new failure mode symmetric to the bug it targets (it can't cause a
+*new* false-merge; the worst case is over-splitting a single bubble's own
+interior, checked directly below).
+
+**block_size=15, C=7 are UNVALIDATED starting values** — same caveat as
+every other constant in this file — chosen to react to a 1-3px line's own
+local contrast without tripping on ordinary flat paper or scan noise, and
+checked against synthetic data (below), not yet checked against a range of
+real pages' actual noise floors and ink darkness.
+
+**Verification performed — synthetic, not real pixels:** built a
+two-ellipse synthetic page (`test_bubble_outline_tracing.py`) — two
+"speech bubbles" with flat white fill, a soft anti-aliased stroke outline,
+Gaussian-blurred to mimic scan/compression softening — with ellipse
+centers placed close enough that the two strokes interact at their
+closest-approach point, tuned empirically (against server.py's actual
+constants, not guessed) so the OLD flatness-only mask genuinely merges
+them into one component first — a companion check, matching this file's
+own established pattern, confirms that premise before trusting anything
+built on top of it. Against that image:
+
+  - OLD mask (flatness+lightness only): two bubble centers resolve to the
+    SAME label — reproduces the bug's mechanism, not just its symptom.
+  - NEW `_find_bubble_components` (with outline carving): the same two
+    centers resolve to DIFFERENT labels.
+  - `_crosses_bubble_boundary`, given two fragment boxes positioned near
+    the bubbles' facing edges (mimicking OCR text wrapping close to a
+    bubble's inner wall, the same layout that produced the real page's
+    ~1px gap): returns `True` (blocks the merge) with the NEW label map,
+    `False` (does not block it) with the OLD one.
+  - Full `_merge_bubble_regions`, run end-to-end with the synthetic image
+    and those two fragment boxes: 2 separate regions with the NEW map; 1
+    region with the OLD map, and — this is the part that actually mirrors
+    the real bug, not just a label count — the OLD-map region's text is
+    the two fragments' text concatenated together, the same shape of
+    corruption as the real `NOZUKI, QUE ELES VÃO SEPARAR OS GAROTOS E EU
+    OUVI ACAMPAMENTO ESCOLAR...` interleaving reported against the real
+    page.
+  - Regression checks, same synthetic setup: two fragments inside the
+    SAME bubble (far apart, top vs bottom) still resolve to one component;
+    a tight 5px same-bubble staggered-lettering pair — the exact
+    legitimate case fix attempt #2 needed to preserve — still merges under
+    the NEW map; a single isolated bubble with no second bubble anywhere
+    on the page keeps its entire interior as one component across 7
+    widely-spaced sample points (i.e. outline carving doesn't fragment a
+    bubble's own interior when there's nothing to disambiguate against).
+
+**What would actually confirm this fix, still not done:** re-run the real
+Brazil_raw.jpg page through `_run_rapidocr_detection` with this change
+applied and confirm the originally-reported two-bubble merge no longer
+reproduces; re-run a handful of other pages with tightly-packed panels
+(both engines) and confirm no new mega-regions appear; specifically check
+a real page with genuinely tight same-bubble staggered lettering to
+confirm `block_size`/`C` aren't so sensitive they start fragmenting real
+bubble interiors that the synthetic single-bubble test didn't happen to
+exercise. Per this file's own precedent (fix attempt #2 passed its
+synthetic test and still failed on the real page for a reason the
+synthetic test's geometry couldn't have caught), passing the synthetic
+suite here is evidence the mechanism is sound, not proof the real page is
+fixed.
+
+---
+
+## Fix attempt #3 verification result: DOES NOT RESOLVE THE REAL PAGE — root cause was misdiagnosed
+
+**The real Brazil_raw.jpg page is now available and was tested.** Ran the
+actual `_run_rapidocr_detection` pipeline, fix applied, against the real
+page. The exact originally-reported symptom reproduces verbatim:
+
+    'NOZUKI, QUE ELES VÃO SEPARAR OS GAROTOS E EU OUVI ACAMPAMENTO ESCOLAR
+    QUE VAI TER? SABE O GAROTAS A NOITE.'
+
+Confirmed not a regression — re-ran with `_bubble_outline_mask` forced to
+a no-op (simulating pre-fix behaviour) against the same page: byte-
+identical output, all 13 regions, including this one. The fix is inert on
+this page, neither helping nor hurting.
+
+**Why: the premise behind fix attempt #3 was wrong for this page.**
+Traced the actual connected-component label map directly (not just the
+merge result) and visualized it against the source art. The two bubbles
+are **not** divided by a thin/faint/low-contrast ink line at all — there
+is no ink of any kind between "VÃO" and "ACAMPAMENTO" (confirmed by
+inspecting the real pixel values in that gap: pure 255 white, no
+gradient). The two bubbles are drawn as a single fused "double-bubble"
+silhouette — the kind of shape where two adjacent speech bubbles' outer
+contours merge into one continuous outline with no internal dividing wall,
+common enough as a manga art convention (visually similar to two soap
+bubbles fused together: a waist/cusp in the outer contour near the top
+and bottom, but the interior is one topologically connected region
+throughout, including through the text-line area). Rendering the
+connected-component label map as an image confirms this directly: both
+bubbles are one single label, wall to wall, with no internal boundary
+pixel anywhere — not "a boundary too faint to detect," but no boundary
+pixel in the source art at all.
+
+**This means no amount of ink-detection sensitivity can fix this case.**
+Adaptive thresholding (or any other per-pixel "is this darker than its
+surroundings" signal) can only find a line that exists, however faint.
+Here there is nothing to find — the fix's entire mechanism doesn't apply.
+This is a materially different failure mode from what fix attempts #2 and
+#3 were both built against (a real but hard-to-detect boundary); the
+codebase's own prior diagnosis ("especially if the ink outline between
+them is thin or low-contrast") undersold how bad this can get — on this
+page it isn't thin or low-contrast, it's **absent**.
+
+**Investigated next: shape-based splitting (distance transform +
+watershed)** — the standard CV technique for separating two touching/
+overlapping blobs with no boundary line between them (the classic
+"separate touching coins" problem). Tried directly against the real
+merged component: `cv2.distanceTransform` on the blob, thresholded at
+30-70% of its own peak to find seed regions for `cv2.watershed`.
+
+**Result: does not naively work either, for a page-specific reason worth
+recording.** The two dominant distance-transform peaks found were NOT
+centered in the left bubble vs. right bubble as hoped — they landed near
+the TOP-middle and BOTTOM-middle of the merged shape (visually, right at
+the waist cusps themselves). Root cause: these two bubbles are packed
+with multi-line dialogue text covering most of their interior area, and
+each glyph is itself a "hole" carved out of the flat+light candidate mask
+(text is dark, excluded from the mask). With that much of the interior
+occupied by text-shaped holes, the actual open flat-light area isn't two
+big round lobes with two deep centers — it's a network of thin corridors
+threading between lines and around letters, PLUS two genuinely open
+margins above the first line and below the last line, which (having no
+nearby text holes) register as the widest, most "interior" points by
+distance-transform — and those margins span horizontally across BOTH
+bubbles, since there's no dividing wall there either. A naive raw-
+distance-transform watershed seeds on those margins and would cut the
+shape top/bottom, not left/right — the wrong axis for separating "this
+bubble's text" from "that bubble's text." Not pursued further as a raw
+geometric approach; a workable version would need seeds informed by where
+the OCR fragments themselves cluster, not blind distance-transform peaks
+on the pixel mask alone — untried, and a bigger lift than either fix
+attempt #2 or #3.
+
+**Decision: not resolved. Documenting instead of shipping a third
+unvalidated heuristic.** Per this file's own standard (do not fix blind,
+do not claim done without checking the real page), the honest state is:
+the confirmed-blocking bug from the original entry is still confirmed-
+blocking on the real page that motivated it. Fix attempt #3's outline-
+carving code remains in `server.py` (harmless — confirmed byte-identical
+output where it doesn't apply, and it may still help pages where a real
+but faint line — as opposed to no line — is the actual cause; that
+scenario hasn't been found on a real page yet either, only synthesized).
+The Correction UI (✏ Correct) remains the load-bearing fallback for this
+exact page and this exact bubble pair, same as it already is for every
+other case in this failure class.
+
+**Real next step, if this gets picked up again:** a fragment-cluster-
+aware split — use the OCR fragments' own natural left/right grouping
+(e.g. k=2 clustering on fragment centroids, or seeding the watershed from
+each existing OCR-fragment bounding box's centroid rather than from raw
+distance-transform peaks) instead of trying to read bubble identity out
+of the pixel mask alone. Untried. Would need the same bar as everything
+else here: verified against Brazil_raw.jpg specifically, then checked for
+regressions against pages with genuinely single, undivided bubbles (so it
+doesn't start splitting real single-bubble multi-paragraph regions in two
+just because their fragments form two loose clusters).
+
+---
+
+## RESOLVED (verified on the real page): fused double-bubble "waist" veto
+
+**Status: FIXED and verified against the real Brazil_raw.jpg page**, plus
+regression-checked on 3 other real pages across BOTH engines. This is the
+first fix for this bug that has actually been confirmed on real pixels
+rather than constructed ones — the previous two attempts both passed
+synthetic tests and then failed here.
+
+**What the earlier attempts got wrong, and what the real signal turned
+out to be.** Attempts #2 (margin tuning) and #3 (ink-line detection) were
+both looking for the wrong thing:
+
+  - #2 assumed the bubbles were separated by DISTANCE. Disproved with real
+    numbers: 1px between different bubbles vs 5px inside one bubble. No
+    threshold separates 1 < 5.
+  - #3 assumed they were separated by faint INK. Disproved by reading the
+    real pixels: the gap is pure 255 white, no ink at all, and the label
+    map shows one component wall to wall.
+
+  Both assumed a *separator* exists and is merely hard to detect. On this
+  page there is no separator. The two bubbles are drawn as one fused
+  silhouette — a single continuous outer contour pinched into a figure-8.
+  That is a common manga convention, not an oddity of this page.
+
+  The signal that does distinguish them is **shape**: a fused
+  double-bubble has a genuine geometric CONSTRICTION between its lobes.
+  A single bubble containing two columns of text — the legitimate
+  "staggered lettering" pattern every earlier fix had to avoid breaking —
+  has no constriction; it's one convex-ish blob.
+
+**Measured, on the real page** (per-column vertical extent of the
+component, i.e. outer-silhouette height at each x — extent rather than
+pixel count specifically because a bubble's interior is full of
+text-shaped holes that would otherwise dominate a raw count):
+
+| component | profile | waist ratio |
+|---|---|---|
+| fused double-bubble (Eu ouvi / Nozuki) | 183px → **136px** → 183px | **0.743** |
+| AINDA BEM (single) | no interior minimum | 1.000 |
+| ISSO SIGNIFICA (single) | no interior minimum | 1.021 |
+| VOCÊ DEVIA (single) | no interior minimum | 1.006 |
+| TEM ALGUMA (single) | no interior minimum | 1.000 |
+| EU ACHO QUE (single) | no interior minimum | 1.048 |
+
+Well-separated, not marginal. `_WAIST_RATIO_THRESHOLD = 0.85` sits clear
+of both clusters.
+
+**Implementation** (`_waist_separates_boxes`, `_component_column_extents`,
+`_dominant_component_for_box` in server.py): a THIRD independent veto in
+`_merge_bubble_regions`'s pair loop, alongside `_crosses_border` and
+`_crosses_bubble_boundary`. For a candidate pair already in the same
+component, it measures the narrowest silhouette extent strictly BETWEEN
+the two fragments' own x-centers and compares it to the narrower of the
+two fragments' own local extents; a ratio at or below the threshold means
+they sit in different lobes and the merge is refused.
+
+Deliberately narrow scope, since a false positive here splits a bubble
+that should have stayed whole:
+  - Only for pairs already in the SAME component (different components
+    are `_crosses_bubble_boundary`'s job and it handles them correctly).
+  - **Horizontal pairs only** (`|dx| > |dy|`). The vertical analogue is
+    NOT enabled: vertical is the hot path — every ordinary line-to-line
+    pair in every normal bubble is vertically separated — so a false
+    positive there would shatter ordinary multi-line dialogue, and there
+    is no confirmed real page to tune a threshold against. Do not enable
+    it without one.
+  - Measured between the two fragments' own centers, not "anywhere in the
+    component" — a waist elsewhere in the blob says nothing about whether
+    THESE two fragments are in different lobes.
+  - Returns False (don't block) on anything it can't confidently measure:
+    no label map, too-short span, fragment not resolvable to a component.
+
+**Verification — real pages, both engines.** RapidOCR on Brazil_raw.jpg
+now produces the two bubbles correctly and in correct reading order:
+
+    'NOZUKI, SABE O ACAMPAMENTO ESCOLAR QUE VAI TER?'
+    'EU OUVI QUE ELES VÃO SEPARAR OS GAROTOS E GAROTAS A NOITE.'
+
+Both match the source art exactly (checked against the page, not inferred
+from whether they read as grammatical Portuguese — see the standing
+warning about that trap in the "Bubble contour detection" comment).
+
+Regression run, each page processed with the veto disabled and enabled and
+the region texts diffed:
+
+| page | RapidOCR | EasyOCR |
+|---|---|---|
+| Brazil_raw.jpg | 13 → 14 regions (**only** the intended split) | identical |
+| Another manga untranslated page.jpg | identical | identical |
+| Manga page test 2_Untranslated.jpg | identical | identical |
+| This is for testing also_untranslated.png | identical | identical |
+
+The EasyOCR column is the check this file has repeatedly called for and
+that fix attempt #2's writeup explicitly flagged as mandatory: this is
+shared code, so a fix validated on one engine only is exactly the
+"fixed A, silently broke B" failure this file exists to prevent. EasyOCR
+output is byte-identical on all four pages, including Brazil_raw.jpg
+(EasyOCR's coarser fragmentation didn't produce the cross-bubble pair in
+the first place, so there is nothing there for the veto to change).
+
+**Test:** `test_fused_bubble_waist.py` — synthetic geometry for the
+mechanism and its scope guards, plus a real-page test that runs the actual
+merge over the real OCR fragment boxes from Brazil_raw.jpg when the image
+is available (it skips with an explicit message when it isn't, rather than
+silently passing on synthetic evidence alone). Includes companion checks
+that both fragments really are in the same component (so the test can't
+pass via the pre-existing different-component veto) and that disabling the
+veto reproduces the original garbled region.
+
+**Note on fix attempt #3's outline-carving code:** retained. It is
+confirmed harmless (byte-identical pipeline output on all four pages) and
+targets a genuinely different failure mode — two bubbles divided by a
+real-but-faint ink line, which the coarse flatness filter smooths over.
+That scenario still has not been confirmed on a real page, only
+synthesized, so its value remains unproven; it is not what fixed this bug.
+
+**Remaining known gaps in this area** (unchanged, still real):
+  - Vertically-stacked fused double-bubbles — not handled, see scope note.
+  - A fused double-bubble whose lobes are so similar in size and so
+    shallowly pinched that the ratio stays above 0.85 — would still merge.
+    No such page has been seen; if one shows up, the threshold is the
+    thing to revisit, and it should be re-measured against the table
+    above rather than nudged blind.
+  - The Correction UI (✏ Correct) remains the fallback for both.

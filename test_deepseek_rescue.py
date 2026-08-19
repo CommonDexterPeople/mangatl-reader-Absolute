@@ -21,77 +21,43 @@ BACKGROUND
   of what's nested inside it.
 
 WHAT THIS TESTS
-  Extracts the actual patched brace-finding logic straight out of
-  server.py (not a hand-copied duplicate) and runs it against 10 cases:
-  the original failing case, the plain/common case (regression guard —
-  this MUST keep working, it's the hot path), several nesting shapes,
-  and three "must correctly return nothing" negative cases so the fix
-  doesn't trade a false-negative bug for a false-positive one.
+  server.py's _rescue_json_from_reasoning() — the real function, imported,
+  not a hand-copied duplicate — against 10 cases: the original failing
+  case, the plain/common case (regression guard — this MUST keep working,
+  it's the hot path), several nesting shapes, and three "must correctly
+  return nothing" negative cases so the fix doesn't trade a false-negative
+  bug for a false-positive one.
 
 HOW TO RUN
   python test_deepseek_rescue.py
-  (pure string/JSON logic — no network, no API keys, no dependencies
-  beyond the standard library, runs in well under a second)
+  (pure string/JSON logic — no network, no API keys. Needs server.py's
+  module-scope deps installed to import it: flask, requests,
+  opencv-python-headless, numpy, pillow. Runs in well under a second.)
 """
 
+import importlib.util
 import json
-import re
 import sys
-import textwrap
 
-with open("server.py", "r", encoding="utf-8") as f:
-    SRC = f.read()
-
-# Pull the live brace-finding block straight out of server.py so this test
-# stays honest against future edits — if someone changes the logic and
-# breaks it, this test breaks against the REAL code, not a stale copy.
-_m = re.search(r"idx = rc\.rfind.*?_i -= 1\n", SRC, re.S)
-if not _m:
-    print("Could not locate the patched brace-finding block in server.py —")
-    print("has _translate_deepseek() been renamed or restructured? Update")
-    print("the regex in this script to match, or check the fix wasn't reverted.")
-    sys.exit(1)
-
-# The block is extracted mid-line from server.py, where it lives nested
-# inside an `if`/`try` at some fixed base indentation (currently 16 spaces).
-# textwrap.dedent can't help directly: the captured text's OWN first line
-# (from the regex match start) has no leading whitespace while every line
-# after it shares a common indent — dedent sees "some lines have zero
-# indent" and refuses to strip anything. Fix: dedent only lines[1:] (which
-# DO share a common prefix), then rejoin with the untouched first line.
-# Verified below by compiling the result before use, so a future edit that
-# changes server.py's indentation and breaks this is caught immediately
-# with a clear error instead of a confusing downstream test failure.
-_lines = _m.group(0).splitlines()
-_body_dedented = textwrap.dedent("\n".join(_lines[1:])) if len(_lines) > 1 else ""
-_BRACE_FINDER_SRC = _lines[0] + ("\n" + _body_dedented if _body_dedented else "")
+# Import the real function from the real module. This file used to regex the
+# brace-finding logic out of server.py's source text, de-indent it, and exec()
+# it in a synthetic namespace — because the logic was inline inside
+# _translate_deepseek(), and reaching it any other way meant making a network
+# call. It has since been lifted into a module-level _rescue_json_from_reasoning(),
+# and server.py's pip-install bootstrap is guarded behind __main__, so a plain
+# import works and the test can no longer drift from the shipped code.
+_spec = importlib.util.spec_from_file_location("mangatl_server", "server.py")
+_server = importlib.util.module_from_spec(_spec)
+sys.modules["mangatl_server"] = _server
 try:
-    compile(_BRACE_FINDER_SRC, "<extracted>", "exec")
-except SyntaxError as e:
-    print("Extracted block from server.py doesn't compile after de-indenting —")
-    print("the extraction regex or this normalization needs updating.")
-    print(f"SyntaxError: {e}")
-    print("--- extracted text ---")
-    print(_BRACE_FINDER_SRC)
+    _spec.loader.exec_module(_server)
+except ImportError as e:
+    print(f"Could not import server.py: {e}")
+    print("Install its module-scope deps first:")
+    print("  pip install flask requests opencv-python-headless numpy pillow")
     sys.exit(1)
 
-
-def rescue_strategy_a(rc: str, rescue_key: str = "translations") -> str:
-    """Re-runs the exact Strategy A logic extracted from server.py against
-    a given reasoning_content string. Returns the rescued JSON substring,
-    or "" if nothing was rescuable."""
-    content = ""
-    ns = {"rc": rc, "rescue_key": rescue_key, "content": content, "json": json}
-    exec(_BRACE_FINDER_SRC, ns)
-    brace = ns.get("brace", -1)
-    if brace is not None and brace >= 0:
-        try:
-            m_obj = json.loads(rc[brace:])
-            if isinstance(m_obj, dict) and rescue_key in m_obj:
-                content = rc[brace:]
-        except Exception:
-            pass
-    return content
+rescue_strategy_a = _server._rescue_json_from_reasoning
 
 
 # (label, reasoning_content input, should_succeed)
