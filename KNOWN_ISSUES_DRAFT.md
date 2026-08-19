@@ -784,3 +784,117 @@ in the waist-veto entry above (ordinary line-to-line pairs are the hot path;
 a false positive there shatters normal dialogue), and there is no real page
 to tune against. If a vertical-CJK page with a fused double-bubble ever
 turns up, this is the entry to start from.
+
+---
+
+## RESOLVED (measured on 3 real Vietnamese pages): hybrid detection for languages one engine reads badly
+
+**Status: IMPLEMENTED and measured.** `local_engine="hybrid"` runs both local
+engines and reconciles them. Gated to `_HYBRID_LANGS = {"vi"}` — the only
+language actually measured.
+
+**The problem.** `_LOCAL_ENGINE_RECOMMENDATION` already recorded that RapidOCR
+mishandles Vietnamese diacritics, but the only remedy was a dismissible banner
+telling the user to switch engines manually. With real Vietnamese pages
+available, the size of the gap is now measured rather than asserted:
+
+| | tone/vowel-marked chars | share of text |
+|---|---|---|
+| ground truth (hand-read) | 72 / 310 | 23.2% |
+| RapidOCR | 41 / 515 | 8.0% |
+| EasyOCR | 76 / 483 | 15.7% |
+
+RapidOCR drops roughly two thirds of the marks. A real line from
+`Vietnam page.png` — source reads `LẦN DUY NHẤT TÔI TỪNG CHỐNG ĐỐI BỐ MẸ...`:
+
+    RapidOCR   LÂN DUY NHÃT TÔI TUNG CHONG DI B ME...
+    EasyOCR    LẪ DUY NHÁT Tôl TÙNG CHỐNG pỐl BỐMẸ _
+
+**But EasyOCR alone is not the answer either**, which is the non-obvious part.
+Scored against hand-read ground truth for the page's seven text containers,
+EasyOCR comes out BELOW RapidOCR overall (0.759 vs 0.789) despite reading
+characters better — because it GROUPS worse. On this page it split one caption
+across two regions, so no single region matches the full ground-truth string.
+RapidOCR's boxes produce the correct grouping; EasyOCR's produce the correct
+characters.
+
+**The fix takes one from each:**
+
+| variant | mean similarity to ground truth | diacritic density |
+|---|---|---|
+| RapidOCR only | 0.789 | 8.0% |
+| EasyOCR only | 0.759 | 15.7% |
+| **hybrid** | **0.835** | **14.2%** |
+| (ground truth) | 1.000 | 23.2% |
+
+The diacritic gain reproduced on the other two pages: 7.9% → 13.2%, and
+10.3% → 17.7%. Fragment match rates were 84%, 87% and 92% of RapidOCR's
+fragments; the misses were fragments one engine found and the other did not
+find at all, not mispairs.
+
+**Matching is SPATIAL (box IoU), not textual — deliberately.** The existing
+`_match_vision_to_easyocr` pairs by fuzzy text similarity, because Gemini
+Vision has no detection step and text is the only signal available. Reusing
+that here would have been circular: the whole reason the hybrid exists is that
+one engine's text is corrupted, so using that corrupted text to decide what it
+corresponds to assumes the answer. Box overlap is independent of the
+recognition error being corrected. `_HYBRID_MIN_IOU = 0.30`, deliberately
+loose because the two detectors crop differently (DBNet hugs glyphs tighter
+than CRAFT).
+
+This is also why the two matchers were NOT merged into one shared helper, as
+an earlier draft of this change proposed: they solve different problems with
+different available signals, and collapsing them would have forced the
+spatial case through a text-similarity interface that cannot serve it.
+
+**Why language-gated rather than a confidence cascade.** The obvious design —
+run the cheap engine, escalate when its confidence is low — cannot work here.
+RapidOCR's diacritic loss is CONFIDENT and wrong; its own score does not flag
+it, so a confidence threshold lets exactly this bug through. Gating on
+measured per-language evidence puts the decision on "this engine has been
+measured wrong for this language" instead of a per-box score that does not
+encode the error.
+
+**Why not for every language.** A second full-page pass is real cost on the
+low-end hardware this targets, and for some languages the trade runs the other
+way — on the Spanish sample pages EasyOCR's text is visibly worse
+(`vesgarravora` for `desgarradora`, `Columpianvo` for `columpiando`), so
+adopting it would degrade those pages. Languages outside `_HYBRID_LANGS` fall
+through to a single engine at today's cost; verified that `hybrid` on a
+Portuguese page returns byte-identical output to `rapidocr`.
+
+**Korean stays a hard route, not a merge.** RapidOCR's bundled model has no
+Korean coverage at all — on a real Korean webtoon page it returned CJK garbage
+(`0L今..`, `武`, `HK`). There is nothing for a merge to reconcile, so `ko`
+routes to EasyOCR alone inside `_run_hybrid_detection`, matching the hard rule
+`_LOCAL_ENGINE_RECOMMENDATION`'s `ko` entry already stated but nothing
+enforced.
+
+**Refactor that came with it.** `_run_easyocr_detection` and
+`_run_rapidocr_detection` each carried their own copy of the decode /
+panel-border / bubble-component / CLAHE prologue and of the raw-box / merge /
+border-percentage epilogue — the RapidOCR copy's own comment said
+"byte-for-byte identical to `_run_easyocr_detection`'s". A third copy for the
+hybrid would have made that worse, so both are now
+`_prepare_page_for_detection` + `_{easyocr,rapidocr}_fragment_boxes` +
+`_finish_local_detection`. **Verified byte-identical** across 8 page/engine
+combinations before and after.
+
+**Tests:** `test_hybrid_detection.py` covers the matcher (1:1 pairing,
+text-blindness, IoU floor) and the scope guards. Deliberately synthetic and
+fast — the real-page numbers above are the evidence for the mechanism, and
+re-measuring them is what adding a language to `_HYBRID_LANGS` requires.
+
+**STILL OPEN:**
+  - Only Vietnamese is measured. `id`, `tr`, `es` and the rest have no
+    before/after and must not be added on the assumption that more engines is
+    better — for Spanish it is measurably worse.
+  - Timing on the N150-class target hardware has not been done. Two full-page
+    passes for `vi` is the cost; it is paid only for that language.
+  - The hybrid keeps RapidOCR's confidences for every fragment, including ones
+    whose text now comes from EasyOCR. The two engines' scores are not on a
+    comparable scale (`_MIN_CONF_MAP`'s thresholds are documented as verified
+    against EasyOCR output specifically), so mixing them per-fragment would
+    make `_merge_bubble_regions`' confidence filter inconsistent across the
+    page. Keeping one engine's scores is the conservative choice, not a
+    validated one.
