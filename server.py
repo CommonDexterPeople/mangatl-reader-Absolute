@@ -5081,7 +5081,12 @@ if __name__ == "__main__":
     # FIX #10 — friendly error instead of a cryptic socket traceback
     if _port_in_use(PORT):
         print(f"\n  ✗  Port {PORT} is already in use.")
-        print(f"     Stop the other process, or change PORT at the top of this script.\n")
+        print( "     Either stop whatever is using it, or pick another port")
+        print( "     with the PORT environment variable — no need to edit this file:")
+        print( "")
+        print( "        (macOS/Linux)  PORT=8081 python server.py")
+        print( "        (Windows PS)   $env:PORT=8081; python server.py")
+        print( "")
         sys.exit(1)
 
     _check_exposure_or_exit(HOST)
