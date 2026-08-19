@@ -21,8 +21,22 @@
 // CHAPTER LIST  (home screen)
 // ══════════════════════════════════════════════
 
+import {
+  CACHE_PREFIX,
+  getCachedChapter,
+  getEffectivePageRegions,
+  onAfterCacheUIRefresh,
+  refreshCacheUI,
+} from './cache.js';
+import { _sanitizeForFilename, _showDownloadGuide } from './export.js';
+import { _dispatchResume } from './history.js';
+import { fetchPageUrls } from './mangadex-api.js';
+import { cancelled } from './state-and-constants.js';
+import { esc, toast } from './utils.js';
+import { buildZip } from './zip-writer.js';
+
 /** Read every cached chapter into a display-ready list, newest first. */
-function _listCachedChapters() {
+export function _listCachedChapters() {
   const keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX));
   const out = [];
   for (const k of keys) {
@@ -53,7 +67,7 @@ function _listCachedChapters() {
   return out;
 }
 
-function _renderChapterList() {
+export function _renderChapterList() {
   const wrap = document.getElementById('home-chapter-list');
   const dlAllBtn = document.getElementById('btn-download-all');
   if (!wrap) return;
@@ -107,7 +121,7 @@ function _renderChapterList() {
  * _runChapterPipeline's own doc comment), so 'local' never needs to be
  * handled here.
  */
-function openCachedChapter(chapterId) {
+export function openCachedChapter(chapterId) {
   const parts = chapterId.split(':');
   const resume = (parts.length === 3 && parts[0] === 'suwayomi')
     ? { kind: 'suwayomi', mangaId: parts[1], chapterIndex: parts[2], sourceLang: '' }
@@ -126,11 +140,11 @@ function openCachedChapter(chapterId) {
 // ══════════════════════════════════════════════
 // DOWNLOAD STATE  (small inline progress, mirrors the reader's export-panel look)
 // ══════════════════════════════════════════════
-let _dlRun = null; // { kind:'single'|'all', label, items:[{label,status}], cancelled }
+export let _dlRun = null; // { kind:'single'|'all', label, items:[{label,status}], cancelled }
 
-function _dlPanelEl() { return document.getElementById('home-download-panel'); }
+export function _dlPanelEl() { return document.getElementById('home-download-panel'); }
 
-function _renderDlPanel() {
+export function _renderDlPanel() {
   const panel = _dlPanelEl();
   if (!panel) return;
   if (!_dlRun) { panel.innerHTML = ''; panel.classList.remove('active'); return; }
@@ -160,14 +174,14 @@ function _renderDlPanel() {
   `;
 }
 
-function _cancelDownload() {
+export function _cancelDownload() {
   if (_dlRun) _dlRun.cancelled = true;
   _dlRun = null;
   _renderDlPanel();
 }
 
 /** Turn one cached chapter into [{name, data}] PNG entries, ready for buildZip(). */
-async function _buildChapterZipEntries(chapterId, cached, folderPrefix = '') {
+export async function _buildChapterZipEntries(chapterId, cached, folderPrefix = '') {
   const urls = await fetchPageUrls(chapterId, 'data'); // full quality for exports
   const label = _sanitizeForFilename(
     `${cached.meta.mangaTitle || 'chapter'}_Ch${cached.meta.chapter || ''}`
@@ -201,7 +215,7 @@ async function _buildChapterZipEntries(chapterId, cached, folderPrefix = '') {
   return { entries, label };
 }
 
-function _triggerZipDownload(zipBytes, filename) {
+export function _triggerZipDownload(zipBytes, filename) {
   const blob = new Blob([zipBytes], { type: 'application/zip' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -217,7 +231,7 @@ function _triggerZipDownload(zipBytes, filename) {
 }
 
 /** Download a single cached chapter as its own zip. */
-async function downloadCachedChapter(chapterId) {
+export async function downloadCachedChapter(chapterId) {
   const raw = localStorage.getItem(CACHE_PREFIX + chapterId);
   if (!raw) { toast('That chapter is no longer cached.'); return; }
   let cached;
@@ -250,7 +264,7 @@ async function downloadCachedChapter(chapterId) {
 }
 
 /** Download every cached chapter as one zip, subfoldered per chapter. */
-async function downloadAllCachedChapters() {
+export async function downloadAllCachedChapters() {
   const chapters = _listCachedChapters();
   if (!chapters.length) { toast('No cached chapters to download.'); return; }
 

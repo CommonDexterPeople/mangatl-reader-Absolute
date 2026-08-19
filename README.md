@@ -134,8 +134,9 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 ├── static/
 │   ├── index.html         Page markup only
 │   ├── style.css          All styling
-│   └── js/                One module per concern: chapter pipeline, correction UI,
-│                           export, local-source handling, MangaDex auth, etc.
+│   └── js/                ES modules, one per concern: chapter pipeline,
+│                           correction UI, export, local-source handling,
+│                           MangaDex auth, etc. main.js is the entry point.
 └── build.py             Reassembles everything into one distributable .py file
 ```
 
@@ -146,7 +147,30 @@ them into the single-file build rather than importing them — so a module in `m
 may import from an earlier one in `config → security → inpaint` order, but never
 from `server.py` itself, and CI checks the built file has no `mtl` imports left.
 
-Load order matters in `static/js/` — these are plain `<script>` tags sharing one global scope, not ES modules, so a new module's `<script>` tag needs to go into `index.html` after whatever it depends on.
+`static/js/` is ES modules. Each file declares what it imports, so load order is
+no longer something you maintain by hand — `index.html` loads exactly one entry
+point (`main.js`) and a new module just needs importing wherever it's used.
+
+`main.js` also holds the **global bridge**: `index.html` and a lot of
+JS-generated markup call functions straight from inline `onclick="…"`
+attributes, which resolve against the global scope at click time. Module scope
+isn't global, so `main.js` re-publishes every module's exports onto `window` —
+about 100 of the ~440 top-level names are reachable that way. It's a
+compatibility shim, not the target state: convert inline handlers to
+`addEventListener` or event delegation, then drop modules from that list as
+nothing in the markup calls into them.
+
+Two consequences worth knowing before editing `static/js/`:
+
+- **You can't assign to another module's binding.** Imports are read-only. Shared
+  mutable state goes through setters (`setCancelled()` in
+  `state-and-constants.js`), and behaviour is added to another module's function
+  by subscribing to a hook it exposes (`onAfterPageRender()` in `page-render.js`),
+  never by reassigning it.
+- **Top-level names must stay unique across all of `static/js/`.** Modules
+  themselves don't require that, but `build.py` flattens them into one scope for
+  the single-file build, where a collision is a redeclaration. The build fails
+  loudly if two modules export the same name.
 
 Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly what gets attached to a GitHub Release for the "just double-click it" crowd. Don't hand-edit the built file: fixes belong in `server.py`/`static/`, then re-run the build.
 

@@ -31,19 +31,11 @@ from pathlib import Path
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
 
-# Order matters: these are plain <script> tags sharing global scope (no ES
-# modules), so later files can reference functions/state defined in earlier
-# ones. This MUST match the <script src="..."> order in static/index.html —
-# the build script cross-checks this automatically (see _js_order_from_html)
-# so a stale hardcoded list here can't silently drift from the real page.
-
-
-def _js_order_from_html(html: str) -> list[str]:
-    """Extract the ordered list of static/js/*.js filenames referenced by
-    <script src="/static/js/NAME.js"> tags in index.html, in document order.
-    This is the source of truth for load order — not a hardcoded list here —
-    so editing index.html's script order and re-running build.py just works."""
-    return re.findall(r'<script src="/static/js/([^"]+\.js)"></script>', html)
+# Frontend load order is no longer a global-scope constraint: static/js/ is ES
+# modules, so each file declares its own dependencies in its own imports.
+# main.js is the entry point and the single place listing the modules —
+# _flatten_js_modules() reads that list, so nothing here can drift from the
+# real page.
 
 
 def _read(path: Path) -> str:
@@ -59,6 +51,76 @@ _MTL_INLINE_ORDER = ["config.py", "security.py", "inpaint.py"]
 _MTL_BEGIN = "# ─── BEGIN local modules (build.py inlines these) ─"
 _MTL_END = "# ─── END local modules ─"
 
+
+# static/js/ is ES modules now, loaded through a single entry (main.js). The
+# single-file build has no module loader and no server to resolve './x.js'
+# specifiers against, so the frontend is FLATTENED into one classic <script>:
+# imports and export keywords are stripped and the modules are concatenated.
+#
+# That works because every top-level name across static/js/ is unique (the
+# build asserts it below) and, in a classic script, top-level declarations are
+# already global — which is exactly what main.js's Object.assign(window, …)
+# bridge exists to reproduce under modules. So the bridge is dropped here: it
+# would reference module namespace objects that no longer exist after
+# flattening, and it is redundant when everything is global anyway.
+
+_ENTRY_JS = "main.js"
+_IMPORT_RE = re.compile(r"^import\b[^;]*;[ \t]*\n?", re.M)
+_EXPORT_RE = re.compile(r"^export[ \t]+", re.M)
+_BRIDGE_RE = re.compile(r"^Object\.assign\(\s*\n\s*window,.*?^\);[ \t]*\n?", re.M | re.S)
+
+
+def _entry_module_order(entry_src: str) -> list[str]:
+    """Module filenames in the order main.js imports them.
+
+    main.js is the single source of truth for load order now, the same way
+    index.html's <script> tags used to be — so reordering imports there is all
+    it takes to reorder the bundle, with nothing to keep in sync here.
+    """
+    order = re.findall(r"^import \* as \w+ from '\./([^']+\.js)';", entry_src, re.M)
+    if not order:
+        raise SystemExit(
+            f"No `import * as … from './x.js'` lines found in static/js/{_ENTRY_JS}. "
+            "build.py reads those to determine bundle order — if the entry "
+            "module's import style changed, update _entry_module_order()."
+        )
+    return order
+
+
+def _flatten_js_modules(js_dir: Path) -> tuple[str, list[str]]:
+    """Concatenate the ES modules into one classic-script bundle."""
+    entry_src = _read(js_dir / _ENTRY_JS)
+    order = _entry_module_order(entry_src)
+
+    missing = [m for m in order if not (js_dir / m).exists()]
+    if missing:
+        raise SystemExit(f"{_ENTRY_JS} imports modules that don't exist: {missing}")
+
+    seen: dict[str, str] = {}
+    chunks = []
+    for name in order:
+        src = _read(js_dir / name)
+        # Guard the assumption that makes flattening safe at all.
+        for decl in re.findall(
+            r"^export[ \t]+(?:async[ \t]+)?(?:function|const|let|var|class)[ \t]+([A-Za-z_$][\w$]*)",
+            src, re.M,
+        ):
+            if decl in seen and seen[decl] != name:
+                raise SystemExit(
+                    f"Top-level name '{decl}' is declared in both {seen[decl]} and "
+                    f"{name}. Under ES modules that's legal, but the single-file "
+                    "build flattens everything into one scope where it is a "
+                    "redeclaration. Rename one of them."
+                )
+            seen[decl] = name
+        body = _EXPORT_RE.sub("", _IMPORT_RE.sub("", src)).strip("\n")
+        chunks.append(f"// ═══ {name} ═══\n{body}")
+
+    entry_body = _BRIDGE_RE.sub("", _IMPORT_RE.sub("", entry_src)).strip("\n")
+    entry_body = _EXPORT_RE.sub("", entry_body)
+    chunks.append(f"// ═══ {_ENTRY_JS} (bridge dropped — flat scope is already global) ═══\n{entry_body}")
+
+    return "\n\n\n".join(chunks), order + [_ENTRY_JS]
 
 def _inline_local_modules(server_src: str, mtl_dir: Path):
     """Replace server.py's `from mtl.… import …` block with the actual source
@@ -124,17 +186,7 @@ def build(output_path: Path) -> None:
     rates_json_path = HERE / "rates.json"
     rates_json = _read(rates_json_path) if rates_json_path.exists() else None
 
-    js_files = _js_order_from_html(index_html)
-    if not js_files:
-        raise SystemExit(
-            "No <script src=\"/static/js/...\"> tags found in static/index.html — "
-            "can't determine JS load order. Did index.html's script tags change format?"
-        )
-    missing = [f for f in js_files if not (STATIC / "js" / f).exists()]
-    if missing:
-        raise SystemExit(f"index.html references JS files that don't exist: {missing}")
-
-    js_bundle = "\n\n".join(_read(STATIC / "js" / f).rstrip("\n") for f in js_files)
+    js_bundle, js_files = _flatten_js_modules(STATIC / "js")
 
     # Inline the stylesheet: replace the <link rel="stylesheet" href="/static/style.css">
     # tag with an actual <style> block.
@@ -148,18 +200,19 @@ def build(output_path: Path) -> None:
             "did the tag's exact text change?"
         )
 
-    # Inline every <script src="/static/js/...."></script> tag. Replace the
-    # FIRST one with the full bundle, then delete the rest (they're now part
-    # of the bundle) — preserves position in the document while consolidating
-    # every module into one <script> block, same shape as the original file.
-    first_replaced = False
-    for f in js_files:
-        tag = f'<script src="/static/js/{f}"></script>'
-        if not first_replaced:
-            html = html.replace(tag, f"<script>\n{js_bundle}\n</script>", 1)
-            first_replaced = True
-        else:
-            html = html.replace(tag, "", 1)
+    # Swap the module entry tag for the flattened bundle. It becomes a CLASSIC
+    # <script>, not type="module": the bundle has had its import/export syntax
+    # stripped, and a classic script is what makes every top-level declaration
+    # global again, so the inline onclick= handlers in the markup still resolve.
+    entry_tag = '<script type="module" src="/static/js/main.js"></script>'
+    if entry_tag not in html:
+        raise SystemExit(
+            "Couldn't find the module entry tag in index.html. build.py "
+            "replaces that tag with the flattened bundle; if the entry script "
+            "tag changed, update entry_tag in build.py to match. Expected: "
+            + entry_tag
+        )
+    html = html.replace(entry_tag, "<script>\n" + js_bundle + "\n</script>", 1)
 
     # Inline rates.json the same way _HTML gets inlined below: replace the
     # empty _RATES_DEFAULT = {} placeholder in server.py with the real,
@@ -259,7 +312,7 @@ def build(output_path: Path) -> None:
     lines = server_src.count("\n")
     print(f"Built {output_path}  ({lines} lines)")
     print(f"  inlined {len(mtl_inlined)} local module(s): {', '.join(mtl_inlined)}")
-    print(f"  inlined {len(js_files)} JS module(s): {', '.join(js_files)}")
+    print(f"  flattened {len(js_files)} JS module(s) into one classic <script>")
     print(f"  inlined style.css ({style_css.count(chr(10))} lines)")
     if rates_json is not None:
         print(f"  inlined rates.json as _RATES_DEFAULT ({rates_json.count(chr(10))} lines)")

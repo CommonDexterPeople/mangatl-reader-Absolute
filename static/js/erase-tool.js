@@ -23,18 +23,47 @@
 // ═══════════════════════════════════════════════════════════════
 
 // _eraseBoxes: [{id, box:[x1,y1,x2,y2] (0-100 pct), tl:string, outside:bool, matched:bool}]
-let _eraseBoxes = [];
-let _eraseImgMeta = null;    // { cdnUrl, imgSrc }
-let _eraseResultBlob = null; // last erased/typeset-page PNG blob, for download
-let _eraseOverlayCtl = null; // box-overlay controller for the current page
-let _eraseSelId = null;      // currently-selected box id (sidebar editing focus)
-let _eraseSourceLang = 'en'; // chapter's source language — needed for OCR/translate calls
-let _availableFonts = [];
-let _eraseDefaultFontPath = localStorage.getItem('mtl_erase_font_path') || '';
-let _eraseDefaultFontSize = parseInt(localStorage.getItem('mtl_erase_font_size') || '0', 10) || 0;
-let _fontsPromise = null;
-let _erasePrePaintOn = false; // true while "paint before erasing" mode is active on the current page
-let _eraseVisionDrawOn = false; // true while newly-drawn boxes should be read via Gemini Vision
+import { createBoxOverlay } from './box-overlay.js';
+import { getCachedChapter, getEffectivePageRegions } from './cache.js';
+import { recordUsage } from './cost-tracker.js';
+import { _sanitizeForFilename, _showDownloadGuide } from './export.js';
+import { setActiveGlossary } from './glossary.js';
+import {
+  _localBlobStore,
+  chapterFromCbz,
+  chapterFromFileList,
+  clearLocalBlobStore,
+  imageRefBody,
+  isLocalRef,
+} from './local-source.js';
+import { fetchChapterMeta, fetchPageUrls, parseChapterId } from './mangadex-api.js';
+import { _pageStore } from './ocr-client.js';
+import {
+  getFinalErasedBlob,
+  getPrePaintPatchForBox,
+  hasPrePaintStrokes,
+  initPaintBrush,
+  initPrePaintBrush,
+  teardownPaintBrush,
+  toggleBrushMode,
+} from './paint-brush.js';
+import { chapterFromSuwayomi } from './suwayomi-api.js';
+import { getModelId, getModelInfo, getTargetLang, translateBatch } from './translate-client.js';
+import { esc, getAiInpaintSetting, show, toast } from './utils.js';
+import { buildZip } from './zip-writer.js';
+
+export let _eraseBoxes = [];
+export let _eraseImgMeta = null;    // { cdnUrl, imgSrc }
+export let _eraseResultBlob = null; // last erased/typeset-page PNG blob, for download
+export let _eraseOverlayCtl = null; // box-overlay controller for the current page
+export let _eraseSelId = null;      // currently-selected box id (sidebar editing focus)
+export let _eraseSourceLang = 'en'; // chapter's source language — needed for OCR/translate calls
+export let _availableFonts = [];
+export let _eraseDefaultFontPath = localStorage.getItem('mtl_erase_font_path') || '';
+export let _eraseDefaultFontSize = parseInt(localStorage.getItem('mtl_erase_font_size') || '0', 10) || 0;
+export let _fontsPromise = null;
+export let _erasePrePaintOn = false; // true while "paint before erasing" mode is active on the current page
+export let _eraseVisionDrawOn = false; // true while newly-drawn boxes should be read via Gemini Vision
 
 // _eraseBatch: Map<pageIdx, {blobBytes, savedAt}> — pages explicitly saved
 // (via eraseSaveToBatch) from the currently loaded chapter/local source,
@@ -42,9 +71,9 @@ let _eraseVisionDrawOn = false; // true while newly-drawn boxes should be read v
 // "whatever's currently loaded" — loading a different chapter/URL/local
 // folder starts a fresh batch (see loadEraseChapter / _loadEraseLocalChapter)
 // rather than silently mixing pages from two different sources into one zip.
-let _eraseBatch = new Map();
+export let _eraseBatch = new Map();
 
-function _ensureFontsLoaded() {
+export function _ensureFontsLoaded() {
   if (_fontsPromise) return _fontsPromise;
   _fontsPromise = fetch('/fonts').then(function(r) {
     return r.ok ? r.json() : { fonts: [] };
@@ -54,7 +83,7 @@ function _ensureFontsLoaded() {
   return _fontsPromise;
 }
 
-function openEraseTool() {
+export function openEraseTool() {
   _eraseSyncAiInpaintToggle();
   _eraseBoxes = [];
   _eraseImgMeta = null;
@@ -91,7 +120,7 @@ function openEraseTool() {
 // overrode their saved setting back to "off" on every export. Called at
 // the top of openEraseTool(), before the toolbar is even shown, so the
 // dropdown always reflects the real setting the first time it's visible.
-function _eraseSyncAiInpaintToggle() {
+export function _eraseSyncAiInpaintToggle() {
   const el = document.getElementById('erase-ai-inpaint');
   if (el) el.value = localStorage.getItem('mtl_ai_inpaint') === 'on' ? 'on' : 'off';
 }
@@ -103,10 +132,10 @@ function _eraseSyncAiInpaintToggle() {
  * in this app works, and a "next/prev page" control lets you reach any
  * page in the chapter from there.
  */
-let _erasePageList = [];   // [{cdn, img}] for the currently loaded chapter
-let _erasePageIdx = 0;
+export let _erasePageList = [];   // [{cdn, img}] for the currently loaded chapter
+export let _erasePageIdx = 0;
 
-async function loadEraseChapter() {
+export async function loadEraseChapter() {
   const rawUrl = document.getElementById('erase-url').value.trim();
   if (!rawUrl) { toast('Paste a MangaDex chapter URL.'); return; }
   const chapterId = parseChapterId(rawUrl);
@@ -147,9 +176,9 @@ async function loadEraseChapter() {
   }
 }
 
-let _eraseChapterId = null;
+export let _eraseChapterId = null;
 
-async function _loadEraseCurrentPage() {
+export async function _loadEraseCurrentPage() {
   const p = _erasePageList[_erasePageIdx];
   if (!p) return;
   _eraseImgMeta = { cdnUrl: p.cdn, imgSrc: p.img };
@@ -186,18 +215,18 @@ async function _loadEraseCurrentPage() {
 // page shape and imageRefBody()'s url-vs-image_b64 split. No API key or
 // network call needed just to load a folder/CBZ; a key is only required once
 // ✦ VISION draw or ↺ translate pending actually calls out.
-function toggleEraseLocalSource() {
+export function toggleEraseLocalSource() {
   document.getElementById('erase-local-source-wrap')?.classList.toggle('open');
 }
 
-function _eraseLocalSourceLang() {
+export function _eraseLocalSourceLang() {
   return document.getElementById('erase-local-source-lang')?.value || 'ja';
 }
 
-function triggerEraseLocalFolderPicker() { document.getElementById('erase-local-folder-input')?.click(); }
-function triggerEraseLocalCbzPicker()    { document.getElementById('erase-local-cbz-input')?.click(); }
+export function triggerEraseLocalFolderPicker() { document.getElementById('erase-local-folder-input')?.click(); }
+export function triggerEraseLocalCbzPicker()    { document.getElementById('erase-local-cbz-input')?.click(); }
 
-async function handleEraseLocalFolderInput(event) {
+export async function handleEraseLocalFolderInput(event) {
   const files = event.target.files;
   event.target.value = ''; // allow picking the same folder again later
   if (!files || !files.length) return;
@@ -210,7 +239,7 @@ async function handleEraseLocalFolderInput(event) {
   }
 }
 
-async function handleEraseLocalCbzInput(event) {
+export async function handleEraseLocalCbzInput(event) {
   const file = event.target.files?.[0];
   event.target.value = '';
   if (!file) return;
@@ -238,7 +267,7 @@ async function handleEraseLocalCbzInput(event) {
  * retroactively break a still-good previously loaded chapter, and a
  * successful one can't accidentally delete the blobs it just registered.
  */
-function _loadEraseLocalChapter(chapter) {
+export function _loadEraseLocalChapter(chapter) {
   if (!chapter.pages.length) { toast('No pages found.'); return; }
   for (const p of _erasePageList) {
     if (isLocalRef(p.cdn)) _localBlobStore.delete(p.cdn);
@@ -275,11 +304,11 @@ function _loadEraseLocalChapter(chapter) {
 // independent screens with their own home-screen-style collapsible sections,
 // same reason erase-local-source-lang exists alongside the main reader's own
 // local-source-lang instead of sharing one.
-function toggleEraseSuwayomiSource() {
+export function toggleEraseSuwayomiSource() {
   document.getElementById('erase-suwayomi-source-wrap')?.classList.toggle('open');
 }
 
-async function loadEraseFromSuwayomi() {
+export async function loadEraseFromSuwayomi() {
   const mangaId      = document.getElementById('erase-suwayomi-manga-id').value.trim();
   const chapterIndex = document.getElementById('erase-suwayomi-chapter-index').value.trim();
   const sourceLang   = document.getElementById('erase-suwayomi-source-lang').value;
@@ -298,7 +327,7 @@ async function loadEraseFromSuwayomi() {
   }
 }
 
-function _populateFontDropdown() {
+export function _populateFontDropdown() {
   const sel = document.getElementById('erase-default-font');
   if (!sel) return;
   const current = _eraseDefaultFontPath;
@@ -312,18 +341,18 @@ function _populateFontDropdown() {
   if (sizeInput) sizeInput.value = _eraseDefaultFontSize > 0 ? String(_eraseDefaultFontSize) : '';
 }
 
-function eraseSetDefaultFont(path) {
+export function eraseSetDefaultFont(path) {
   _eraseDefaultFontPath = path || '';
   localStorage.setItem('mtl_erase_font_path', _eraseDefaultFontPath);
 }
 
-function eraseSetDefaultFontSize(value) {
+export function eraseSetDefaultFontSize(value) {
   const n = parseInt(value, 10);
   _eraseDefaultFontSize = (Number.isFinite(n) && n > 0) ? n : 0;
   localStorage.setItem('mtl_erase_font_size', String(_eraseDefaultFontSize));
 }
 
-function _updateErasePageLabel() {
+export function _updateErasePageLabel() {
   const lbl = document.getElementById('erase-page-label');
   if (lbl) lbl.textContent = `Page ${_erasePageIdx + 1} / ${_erasePageList.length}`;
   const prevBtn = document.getElementById('erase-prev-page');
@@ -332,14 +361,14 @@ function _updateErasePageLabel() {
   if (nextBtn) nextBtn.disabled = _erasePageIdx >= _erasePageList.length - 1;
 }
 
-async function eraseGoToPage(delta) {
+export async function eraseGoToPage(delta) {
   const next = _erasePageIdx + delta;
   if (next < 0 || next >= _erasePageList.length) return;
   _erasePageIdx = next;
   await _loadEraseCurrentPage();
 }
 
-function _renderEraseCanvas() {
+export function _renderEraseCanvas() {
   const wrap = document.getElementById('erase-canvas-wrap');
   if (_eraseOverlayCtl) { _eraseOverlayCtl.detach(); _eraseOverlayCtl = null; }
   teardownPaintBrush();
@@ -379,7 +408,7 @@ function _renderEraseCanvas() {
  * call each but zero translate calls until you explicitly batch-translate
  * — the whole point of the "draw fixes first, translate once" workflow.
  */
-async function _eraseFinalizeDrawnBox(box) {
+export async function _eraseFinalizeDrawnBox(box) {
   const id = Date.now() + Math.random();
 
   if (!_eraseVisionDrawOn) {
@@ -426,7 +455,7 @@ async function _eraseFinalizeDrawnBox(box) {
  * so a transient failure (e.g. a 502 from an intermittently-flaky Gemini
  * call) doesn't require deleting and redrawing the box from scratch.
  */
-async function _runVisionCropOn(placeholder, box) {
+export async function _runVisionCropOn(placeholder, box) {
   // Key source depends on which provider is translating — see
   // ocr-client.js's ocrPage() / correction-ui.js's _finalizeBox() for the
   // identical reasoning: Vision always calls Gemini regardless of the
@@ -506,7 +535,7 @@ async function _runVisionCropOn(placeholder, box) {
 }
 
 /** Re-runs the Vision OCR call for a box that previously failed (visionFailed). */
-async function eraseRetryVisionBox(id) {
+export async function eraseRetryVisionBox(id) {
   const b = _eraseBoxes.find(x => String(x.id) === String(id));
   if (!b) return;
   b.visionPending = true;
@@ -521,7 +550,7 @@ async function eraseRetryVisionBox(id) {
  * translations. Mutually exclusive with pre-paint mode — both repurpose
  * the same drag-to-draw canvas for a different action.
  */
-function eraseToggleVisionDraw() {
+export function eraseToggleVisionDraw() {
   if (!_eraseImgMeta) return;
   if (_erasePrePaintOn) eraseTogglePrePaint(); // turn off pre-paint first — modes don't mix
   _eraseVisionDrawOn = !_eraseVisionDrawOn;
@@ -536,7 +565,7 @@ function eraseToggleVisionDraw() {
  * pixels the server will read once erase runs — see eraseRunErase(),
  * which packages any painted regions as per-box pre_paint patches.
  */
-function eraseTogglePrePaint() {
+export function eraseTogglePrePaint() {
   if (!_eraseImgMeta) return;
   if (_eraseVisionDrawOn) {
     _eraseVisionDrawOn = false;
@@ -565,7 +594,7 @@ function eraseTogglePrePaint() {
 // point falls inside the drawn box, if any. This is what lets a box you
 // draw by hand come pre-filled with the real translation (including any
 // ✏ CORRECT edits) instead of starting blank every time.
-function _findMatchingTranslation(box) {
+export function _findMatchingTranslation(box) {
   const regions = _getPageRegionsForErase();
   if (!regions || !regions.length) return null;
   const [x1, y1, x2, y2] = box;
@@ -586,7 +615,7 @@ function _findMatchingTranslation(box) {
 }
 
 /** This page's effective (correction-preferring) regions, or null. */
-function _getPageRegionsForErase() {
+export function _getPageRegionsForErase() {
   if (!_eraseChapterId) return null;
   const key = `${_eraseChapterId}_${_erasePageIdx}`;
   const pd = _pageStore.get(key);
@@ -602,7 +631,7 @@ function _getPageRegionsForErase() {
   return getEffectivePageRegions(_eraseChapterId, _erasePageIdx, fallback);
 }
 
-function _renderEraseBoxes() {
+export function _renderEraseBoxes() {
   const ov = document.getElementById('erase-overlay');
   if (!ov) return;
   ov.querySelectorAll('.corr-rbox').forEach(el => el.remove());
@@ -635,7 +664,7 @@ function _renderEraseBoxes() {
 }
 
 // ── Sidebar: per-box translation text + "outside page" toggle + remove ───
-function _renderEraseSidebar() {
+export function _renderEraseSidebar() {
   const sb = document.getElementById('erase-sidebar');
   if (!sb) return;
   if (!_eraseBoxes.length) {
@@ -703,7 +732,7 @@ function _renderEraseSidebar() {
 /** Builds <option> markup for a per-box font <select>, with "Page default"
  * as the empty-value option (so a box only overrides the font when the
  * person deliberately picks one) followed by every discovered system font. */
-function _eraseFontOptionsHtml(selectedPath) {
+export function _eraseFontOptionsHtml(selectedPath) {
   let html = '<option value=""' + (selectedPath ? '' : ' selected') + '>Page default</option>';
   _availableFonts.forEach(function(f) {
     const sel = f.path === selectedPath ? ' selected' : '';
@@ -712,7 +741,7 @@ function _eraseFontOptionsHtml(selectedPath) {
   return html;
 }
 
-function eraseSelectBox(id) {
+export function eraseSelectBox(id) {
   // ids are stored as numbers (Date.now()+Math.random()); template strings
   // pass them back as strings, so compare loosely.
   _eraseSelId = _eraseBoxes.find(b => String(b.id) === String(id))?.id ?? null;
@@ -723,7 +752,7 @@ function eraseSelectBox(id) {
   });
 }
 
-function eraseSetBoxText(id, text) {
+export function eraseSetBoxText(id, text) {
   const b = _eraseBoxes.find(x => String(x.id) === String(id));
   if (!b) return;
   b.tl = text;
@@ -732,7 +761,7 @@ function eraseSetBoxText(id, text) {
   _updateErasePendingButton();
 }
 
-function eraseSetBoxOutside(id, checked) {
+export function eraseSetBoxOutside(id, checked) {
   const b = _eraseBoxes.find(x => String(x.id) === String(id));
   if (!b) return;
   b.outside = checked;
@@ -740,27 +769,27 @@ function eraseSetBoxOutside(id, checked) {
   _renderEraseSidebar();
 }
 
-function eraseSetBoxPrePainted(id, checked) {
+export function eraseSetBoxPrePainted(id, checked) {
   const b = _eraseBoxes.find(x => String(x.id) === String(id));
   if (!b) return;
   b.prePainted = checked;
   _renderEraseSidebar();
 }
 
-function eraseSetBoxFont(id, path) {
+export function eraseSetBoxFont(id, path) {
   const b = _eraseBoxes.find(x => String(x.id) === String(id));
   if (!b) return;
   b.fontPath = path || '';
 }
 
-function eraseSetBoxFontSize(id, value) {
+export function eraseSetBoxFontSize(id, value) {
   const b = _eraseBoxes.find(x => String(x.id) === String(id));
   if (!b) return;
   const n = parseInt(value, 10);
   b.fontSize = (Number.isFinite(n) && n > 0) ? n : 0;
 }
 
-function eraseRemoveBox(id) {
+export function eraseRemoveBox(id) {
   _eraseBoxes = _eraseBoxes.filter(x => String(x.id) !== String(id));
   if (String(_eraseSelId) === String(id)) _eraseSelId = null;
   _renderEraseBoxes();
@@ -768,7 +797,7 @@ function eraseRemoveBox(id) {
   _updateErasePendingButton();
 }
 
-function eraseClearBoxes() {
+export function eraseClearBoxes() {
   _eraseBoxes = [];
   _eraseSelId = null;
   _renderEraseBoxes();
@@ -786,7 +815,7 @@ function eraseClearBoxes() {
  * existing boxes are kept, seeded ones are appended (click ✕ to remove
  * any you don't want).
  */
-function eraseSeedFromOcr() {
+export function eraseSeedFromOcr() {
   if (!_eraseChapterId) return;
   const regions = _getPageRegionsForErase();
 
@@ -827,11 +856,11 @@ function eraseSeedFromOcr() {
 /** A box is "pending" if it has Vision-read source text but no translation
  * yet. Boxes with no srcText at all (blank/manual/erase-only boxes) are
  * NOT pending — there's nothing to translate them from. */
-function _isErasePending(b) {
+export function _isErasePending(b) {
   return !!(b.srcText && b.srcText.trim()) && !(b.tl && b.tl.trim());
 }
 
-function _updateErasePendingButton() {
+export function _updateErasePendingButton() {
   const btn = document.getElementById('btn-erase-translate-pending');
   if (!btn) return;
   let countEl = document.getElementById('erase-pending-count');
@@ -856,7 +885,7 @@ function _updateErasePendingButton() {
  * center point as cx/cy so the model gets the same spatial reading-order
  * signal translateBatch always uses for a full page.
  */
-async function eraseTranslatePending() {
+export async function eraseTranslatePending() {
   const pending = _eraseBoxes.filter(_isErasePending);
   if (!pending.length) {
     const failed = _eraseBoxes.filter(b => b.visionFailed).length;
@@ -902,7 +931,7 @@ async function eraseTranslatePending() {
   _updateErasePendingButton();
 }
 
-async function eraseRunErase() {
+export async function eraseRunErase() {
   if (!_eraseBoxes.length) { toast('Draw at least one box first.'); return; }
 
   const stillPending = _eraseBoxes.filter(_isErasePending).length;
@@ -990,7 +1019,7 @@ async function eraseRunErase() {
   }
 }
 
-function _showErasePreview() {
+export function _showErasePreview() {
   if (!_eraseResultBlob) return;
   const img = document.getElementById('erase-img');
   if (img) img.src = URL.createObjectURL(_eraseResultBlob);
@@ -1004,7 +1033,7 @@ function _showErasePreview() {
   initPaintBrush();
 }
 
-async function eraseDownloadPage() {
+export async function eraseDownloadPage() {
   if (!_eraseResultBlob) return;
   const blob = await getFinalErasedBlob();
   const a = document.createElement('a');
@@ -1025,9 +1054,9 @@ async function eraseDownloadPage() {
 // ⬇ Download this page only already did one page at a time.
 // ══════════════════════════════════════════════
 
-function _eraseBatchPanelEl() { return document.getElementById('erase-batch-panel'); }
+export function _eraseBatchPanelEl() { return document.getElementById('erase-batch-panel'); }
 
-function _renderEraseBatchPanel() {
+export function _renderEraseBatchPanel() {
   const panel = _eraseBatchPanelEl();
   if (!panel) return;
 
@@ -1065,7 +1094,7 @@ function _renderEraseBatchPanel() {
  * page (e.g. after redrawing a box and erasing again) just replaces its
  * previous entry. Nothing downloads yet; that's ⬇ Download ZIP below.
  */
-async function eraseSaveToBatch() {
+export async function eraseSaveToBatch() {
   if (!_eraseResultBlob) return;
   const blob = await getFinalErasedBlob();
   const blobBytes = new Uint8Array(await blob.arrayBuffer());
@@ -1075,12 +1104,12 @@ async function eraseSaveToBatch() {
   toast(`Page ${_erasePageIdx + 1} ${alreadySaved ? 're-' : ''}saved to batch (${_eraseBatch.size} ready).`);
 }
 
-function eraseRemoveFromBatch(pageIdx) {
+export function eraseRemoveFromBatch(pageIdx) {
   _eraseBatch.delete(pageIdx);
   _renderEraseBatchPanel();
 }
 
-function eraseClearBatch() {
+export function eraseClearBatch() {
   if (!_eraseBatch.size) return;
   if (!confirm(`Clear all ${_eraseBatch.size} saved page(s) from the batch? This can't be undone.`)) return;
   _eraseBatch = new Map();
@@ -1093,7 +1122,7 @@ function eraseClearBatch() {
  * Typeset" uses, so no server round-trip and no re-encoding of pages
  * that are already finished.
  */
-function eraseDownloadBatchZip() {
+export function eraseDownloadBatchZip() {
   if (!_eraseBatch.size) {
     toast('Nothing saved yet — ↺ Erase a page, then 💾 Save to batch, before downloading a zip.');
     return;

@@ -14,14 +14,31 @@
 // CORRECTION UI
 // ══════════════════════════════════════════════
 
-const _corrMode  = {};  // pageIdx → 'select'|'draw'|'vision-draw'|'delete'|'reorder'
-const _corrSelId = {};  // pageIdx → selected region id (or null)
-const _corrWork  = {};  // pageIdx → working regions array
-const _corrOverlayCtl = {}; // pageIdx → box-overlay controller
+import { createBoxOverlay } from './box-overlay.js';
+import { recordUsage } from './cost-tracker.js';
+import { openGlossaryModal } from './glossary.js';
+import { imageRefBody } from './local-source.js';
+import { _pageStore } from './ocr-client.js';
+import { redoPageWithVision, renderPage } from './page-render.js';
+import { _activeChapterId, getLangName } from './state-and-constants.js';
+import {
+  VALID_TEXT_TYPES,
+  _DEEPL_TARGET_LANG_MAP,
+  getModelId,
+  getModelInfo,
+  getTargetLang,
+  translateBatch,
+} from './translate-client.js';
+import { esc, toast } from './utils.js';
+
+export const _corrMode  = {};  // pageIdx → 'select'|'draw'|'vision-draw'|'delete'|'reorder'
+export const _corrSelId = {};  // pageIdx → selected region id (or null)
+export const _corrWork  = {};  // pageIdx → working regions array
+export const _corrOverlayCtl = {}; // pageIdx → box-overlay controller
 
 // ── Helpers ───────────────────────────────────
-function _corrStoreKey(pageIdx)  { return `${_activeChapterId}_${pageIdx}`; }
-function _corrLocalKey(pageIdx)  { return `mtl_corr_${_activeChapterId}_${pageIdx}`; }
+export function _corrStoreKey(pageIdx)  { return `${_activeChapterId}_${pageIdx}`; }
+export function _corrLocalKey(pageIdx)  { return `mtl_corr_${_activeChapterId}_${pageIdx}`; }
 
 // A saved draft is only trustworthy for the EXACT region set it was made
 // against. Chapter+page alone is not a strong enough key: a MangaDex
@@ -44,7 +61,7 @@ function _corrLocalKey(pageIdx)  { return `mtl_corr_${_activeChapterId}_${pageId
 // This isn't cryptographic — collisions are fine to miss occasionally,
 // since correctly rejecting a genuinely-different region set is the goal,
 // not tamper-proofing local storage.
-function _corrSourceSignature(pd) {
+export function _corrSourceSignature(pd) {
   if (!pd) return '';
   const base = pd.sortedRegions || pd.autoRegions || [];
   // Text, not translation — text is what OCR/merge actually produced and
@@ -53,7 +70,7 @@ function _corrSourceSignature(pd) {
   return `${base.length}|${base.map(r => (r.text || '').trim()).join('\u241F')}`;
 }
 
-function _saveCorrections(pageIdx) {
+export function _saveCorrections(pageIdx) {
   try {
     const pd  = _pageStore.get(_corrStoreKey(pageIdx));
     const sig = _corrSourceSignature(pd);
@@ -62,14 +79,14 @@ function _saveCorrections(pageIdx) {
   } catch(e) { console.warn('Could not save corrections', e); }
 }
 
-function _loadCorrections(pageIdx) {
+export function _loadCorrections(pageIdx) {
   try {
     const raw = localStorage.getItem(_corrLocalKey(pageIdx));
     return raw ? JSON.parse(raw) : null;
   } catch { return null; }
 }
 
-function _initWorkingRegions(pageIdx) {
+export function _initWorkingRegions(pageIdx) {
   const pd  = _pageStore.get(_corrStoreKey(pageIdx));
   const saved = _loadCorrections(pageIdx);
 
@@ -107,7 +124,7 @@ function _initWorkingRegions(pageIdx) {
 }
 
 // ── Open / Close ──────────────────────────────
-function _openCorrectionCore(pageIdx) {
+export function _openCorrectionCore(pageIdx) {
   const card = document.getElementById(`page-${pageIdx}`);
   if (!card) return;
   const pd = _pageStore.get(_corrStoreKey(pageIdx));
@@ -124,7 +141,7 @@ function _openCorrectionCore(pageIdx) {
   _updatePendingButton(pageIdx);
 }
 
-function _closeCorrectionCore(pageIdx) {
+export function _closeCorrectionCore(pageIdx) {
   const card = document.getElementById(`page-${pageIdx}`);
   if (!card) return;
   _corrOverlayCtl[pageIdx]?.detach();
@@ -140,7 +157,7 @@ function _closeCorrectionCore(pageIdx) {
 }
 
 // ── HTML builder ──────────────────────────────
-function _buildCorrHTML(pageIdx, imgSrc) {
+export function _buildCorrHTML(pageIdx, imgSrc) {
   // Check Flow is a continuity-analysis pass — it judges whether a pronoun
   // matches who's speaking, whether tone holds across lines, etc. That's an
   // inherently LLM reasoning task, not a translation task, so unlike
@@ -195,7 +212,7 @@ function _buildCorrHTML(pageIdx, imgSrc) {
  * was cleared back to it — i.e. it needs a translate call before export.
  * Same sentinel _exportRegionsForPage / typeset_page already treat as
  * "nothing to draw", so this is consistent with what export actually does. */
-function _isPendingTranslation(r) {
+export function _isPendingTranslation(r) {
   const tl = (r.tl || '').trim();
   return !tl || tl === '—';
 }
@@ -205,7 +222,7 @@ function _isPendingTranslation(r) {
  * how many regions are untranslated (finalize box, delete, split, merge,
  * undo, etc.) — the count would otherwise go stale until the next
  * sidebar/overlay re-render, which don't always coincide with a tl change. */
-function _updatePendingButton(pageIdx) {
+export function _updatePendingButton(pageIdx) {
   const btn = document.getElementById(`corr-pending-${pageIdx}`);
   if (!btn) return;
   let countEl = document.getElementById(`corr-pending-count-${pageIdx}`);
@@ -222,7 +239,7 @@ function _updatePendingButton(pageIdx) {
 }
 
 // ── Overlay rendering ─────────────────────────
-function _renderCorrOverlay(pageIdx) {
+export function _renderCorrOverlay(pageIdx) {
   const ov = document.getElementById(`corr-ov-${pageIdx}`);
   if (!ov) return;
   const mode    = _corrMode[pageIdx] || 'select';
@@ -256,7 +273,7 @@ function _renderCorrOverlay(pageIdx) {
 //   - the vision-mode preview tint (previewClassFn)
 //   - live-highlighting the region a vision-draw box would replace (onDragMove)
 //   - what happens once a box is finalized (onDrawEnd → _finalizeBox)
-function _attachCorrDrawEvents(pageIdx, pd) {
+export function _attachCorrDrawEvents(pageIdx, pd) {
   // Detach any controller left over from a previous openCorrection() call —
   // openCorrection() rebuilds card.innerHTML, so the old overlay element is
   // gone and its listeners would otherwise leak on document forever.
@@ -293,7 +310,7 @@ function _attachCorrDrawEvents(pageIdx, pd) {
 
 // ── IoU overlap helpers ───────────────────────
 // Returns Intersection-over-Union for two [x1,y1,x2,y2] boxes (% coords).
-function _iou(a, b) {
+export function _iou(a, b) {
   const ix1=Math.max(a[0],b[0]), iy1=Math.max(a[1],b[1]);
   const ix2=Math.min(a[2],b[2]), iy2=Math.min(a[3],b[3]);
   const inter = Math.max(0,ix2-ix1) * Math.max(0,iy2-iy1);
@@ -304,7 +321,7 @@ function _iou(a, b) {
 
 // Find the existing (non-deleted) region whose box most overlaps `box`.
 // Returns the region object if IoU > 0.35, else null.
-function _findOverlappingRegion(pageIdx, box) {
+export function _findOverlappingRegion(pageIdx, box) {
   const regions = (_corrWork[pageIdx]||[]).filter(r => !r.deleted && r.box);
   let best = null, bestScore = 0.35; // min threshold
   for (const r of regions) {
@@ -314,7 +331,7 @@ function _findOverlappingRegion(pageIdx, box) {
   return best;
 }
 
-async function _finalizeBox(pageIdx, box, pd, useVision = false) {
+export async function _finalizeBox(pageIdx, box, pd, useVision = false) {
   const img = document.getElementById(`corr-img-${pageIdx}`);
   if (!img) return;
   const nw=img.naturalWidth, nh=img.naturalHeight;
@@ -431,13 +448,13 @@ async function _finalizeBox(pageIdx, box, pd, useVision = false) {
 }
 
 // ── Select + sidebar ──────────────────────────
-function _selectCorrRegion(pageIdx, id) {
+export function _selectCorrRegion(pageIdx, id) {
   _corrSelId[pageIdx] = id;
   _renderCorrOverlay(pageIdx);
   _renderCorrSidebar(pageIdx);
 }
 
-function _renderCorrSidebar(pageIdx) {
+export function _renderCorrSidebar(pageIdx) {
   const sb = document.getElementById(`corr-sb-${pageIdx}`);
   if (!sb) return;
   const mode = _corrMode[pageIdx] || 'select';
@@ -521,14 +538,14 @@ function _renderCorrSidebar(pageIdx) {
 // there, Yodaka!" vs. just "Yodaka") — prefilled into the modal's inputs
 // rather than auto-saved, so the person can trim it down to the actual
 // term before it's written to the glossary.
-function _quickAddToGlossary(pageIdx, id) {
+export function _quickAddToGlossary(pageIdx, id) {
   const srcEl = document.getElementById(`cta-${pageIdx}-${id}`);
   const tlEl  = document.getElementById(`ctl-${pageIdx}-${id}`);
   openGlossaryModal({ src: srcEl?.value || '', tl: tlEl?.value || '' });
 }
 
 // ── Split UI ──────────────────────────────────
-function _showSplitUI(pageIdx, regionId) {
+export function _showSplitUI(pageIdx, regionId) {
   const sb = document.getElementById(`corr-sb-${pageIdx}`);
   if (!sb) return;
   const pd = _pageStore.get(_corrStoreKey(pageIdx));
@@ -560,7 +577,7 @@ function _showSplitUI(pageIdx, regionId) {
     <button class="corr-action-btn" style="margin-top:0.8rem;width:100%" onclick="_selectCorrRegion(${pageIdx},${regionId})">CANCEL</button>`;
 }
 
-function _confirmSplit(pageIdx, regionId, splitAfterIdx) {
+export function _confirmSplit(pageIdx, regionId, splitAfterIdx) {
   const pd = _pageStore.get(_corrStoreKey(pageIdx));
   const regions = _corrWork[pageIdx];
   if (!pd||!regions) return;
@@ -591,7 +608,7 @@ function _confirmSplit(pageIdx, regionId, splitAfterIdx) {
 }
 
 // ── Merge ─────────────────────────────────────
-function _doMerge(pageIdx, regionId) {
+export function _doMerge(pageIdx, regionId) {
   const sel = document.getElementById(`cmerge-${pageIdx}-${regionId}`);
   if (!sel?.value) { toast('Select a region to merge with.'); return; }
   const otherId = parseInt(sel.value);
@@ -616,7 +633,7 @@ function _doMerge(pageIdx, regionId) {
 }
 
 // ── Delete ────────────────────────────────────
-function _deleteCorrRegion(pageIdx, regionId) {
+export function _deleteCorrRegion(pageIdx, regionId) {
   const regions = _corrWork[pageIdx];
   const r = regions?.find(x=>x.id===regionId);
   if (r) r.deleted=true;
@@ -627,7 +644,7 @@ function _deleteCorrRegion(pageIdx, regionId) {
 }
 
 // ── Reorder sidebar ───────────────────────────
-function _renderReorderSidebar(pageIdx) {
+export function _renderReorderSidebar(pageIdx) {
   const sb=document.getElementById(`corr-sb-${pageIdx}`); if(!sb) return;
   const regions=(_corrWork[pageIdx]||[]).filter(r=>!r.deleted);
   sb.innerHTML=`
@@ -645,7 +662,7 @@ function _renderReorderSidebar(pageIdx) {
     </div>`;
 }
 
-function _reorderReg(pageIdx, regionId, dir) {
+export function _reorderReg(pageIdx, regionId, dir) {
   const all=_corrWork[pageIdx]; if(!all) return;
   const active=all.filter(r=>!r.deleted);
   const ci=active.findIndex(r=>r.id===regionId);
@@ -657,12 +674,12 @@ function _reorderReg(pageIdx, regionId, dir) {
 }
 
 // ── Toolbar ───────────────────────────────────
-function setCorrMode(pageIdx, mode) {
+export function setCorrMode(pageIdx, mode) {
   _corrMode[pageIdx]=mode; _corrSelId[pageIdx]=null;
   _updateToolbar(pageIdx); _renderCorrOverlay(pageIdx); _renderCorrSidebar(pageIdx);
 }
 
-function _updateToolbar(pageIdx) {
+export function _updateToolbar(pageIdx) {
   const tb=document.getElementById(`corr-tb-${pageIdx}`); if(!tb) return;
   const mode=_corrMode[pageIdx]||'select';
   const map={select:'SELECT',draw:'DRAW','vision-draw':'VISION',delete:'DELETE',reorder:'ORDER'};
@@ -689,7 +706,7 @@ function _updateToolbar(pageIdx) {
 // Recommended workflow: fix global/systemic errors with full-page ↺ RE-TRANSLATE
 // first, then use the per-bubble ↺ to fine-tune individual regions.
 
-async function translateSingleWithContext(region, contextRegions, sourceLang, targetLang) {
+export async function translateSingleWithContext(region, contextRegions, sourceLang, targetLang) {
   const key     = document.getElementById('ai-key').value.trim();
   const info    = getModelInfo();
   const modelId = getModelId();
@@ -821,7 +838,7 @@ async function translateSingleWithContext(region, contextRegions, sourceLang, ta
   } catch { return { tl: '—', t: 'speech' }; }
 }
 
-async function retranslateRegion(pageIdx, id) {
+export async function retranslateRegion(pageIdx, id) {
   const btn = document.getElementById(`crr-${pageIdx}-${id}`);
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
   const pd = _pageStore.get(_corrStoreKey(pageIdx));
@@ -863,7 +880,7 @@ async function retranslateRegion(pageIdx, id) {
 // area of the page, so letting the model see them as one connected batch
 // is more useful here than the neighbour-sampling approach that per-region
 // ↺ uses for a single already-isolated retranslation.
-async function translatePendingRegions(pageIdx) {
+export async function translatePendingRegions(pageIdx) {
   const btn = document.getElementById(`corr-pending-${pageIdx}`);
   const pd  = _pageStore.get(_corrStoreKey(pageIdx));
   if (!pd) { toast('No page data.'); return; }
@@ -899,7 +916,7 @@ async function translatePendingRegions(pageIdx) {
   _updatePendingButton(pageIdx);
 }
 
-async function retranslatePage(pageIdx) {
+export async function retranslatePage(pageIdx) {
   const btn=document.getElementById(`corr-retrans-${pageIdx}`);
   if(btn){btn.disabled=true; btn.textContent='Translating…';}
   const pd=_pageStore.get(_corrStoreKey(pageIdx));
@@ -935,7 +952,7 @@ async function retranslatePage(pageIdx) {
 // that cost opt-in rather than doubling the call count on every page by
 // default.
 // ══════════════════════════════════════════════════════════════════════════
-async function checkPageFlow(pageIdx) {
+export async function checkPageFlow(pageIdx) {
   const btn = document.getElementById(`corr-checkflow-${pageIdx}`);
   const pd  = _pageStore.get(_corrStoreKey(pageIdx));
   if (!pd) { toast('No page data.'); return; }
@@ -1068,7 +1085,7 @@ async function checkPageFlow(pageIdx) {
  * "Apply all" action (per the chosen UX — batch approve rather than
  * per-line checkboxes, since flagged counts are expected to be small).
  */
-function _showFlowIssuesModal(pageIdx, issues) {
+export function _showFlowIssuesModal(pageIdx, issues) {
   const existing = document.getElementById('flow-issues-modal');
   if (existing) existing.remove();
 
@@ -1100,9 +1117,9 @@ function _showFlowIssuesModal(pageIdx, issues) {
   _pendingFlowIssues = issues;
 }
 
-let _pendingFlowIssues = null;
+export let _pendingFlowIssues = null;
 
-function _applyFlowIssues(pageIdx) {
+export function _applyFlowIssues(pageIdx) {
   if (!_pendingFlowIssues) return;
   _pendingFlowIssues.forEach(it => { it.region.tl = it.newTl; });
   const count = _pendingFlowIssues.length;
@@ -1122,20 +1139,20 @@ function _applyFlowIssues(pageIdx) {
 // the same reason. trans-rail.js needs to act BEFORE the card's innerHTML is
 // replaced (to disconnect its MutationObserver) and again AFTER, so this seam
 // exposes both edges rather than only an "after".
-const _beforeCorrectionOpenHooks = [];
-const _afterCorrectionOpenHooks  = [];
-const _afterCorrectionCloseHooks = [];
+export const _beforeCorrectionOpenHooks = [];
+export const _afterCorrectionOpenHooks  = [];
+export const _afterCorrectionCloseHooks = [];
 
-function onBeforeCorrectionOpen(fn) { _beforeCorrectionOpenHooks.push(fn); }
-function onAfterCorrectionOpen(fn)  { _afterCorrectionOpenHooks.push(fn); }
-function onAfterCorrectionClose(fn) { _afterCorrectionCloseHooks.push(fn); }
+export function onBeforeCorrectionOpen(fn) { _beforeCorrectionOpenHooks.push(fn); }
+export function onAfterCorrectionOpen(fn)  { _afterCorrectionOpenHooks.push(fn); }
+export function onAfterCorrectionClose(fn) { _afterCorrectionCloseHooks.push(fn); }
 
-function openCorrection(pageIdx) {
+export function openCorrection(pageIdx) {
   for (const fn of _beforeCorrectionOpenHooks) fn(pageIdx);
   _openCorrectionCore(pageIdx);
   for (const fn of _afterCorrectionOpenHooks) fn(pageIdx);
 }
-function closeCorrection(pageIdx) {
+export function closeCorrection(pageIdx) {
   _closeCorrectionCore(pageIdx);
   for (const fn of _afterCorrectionCloseHooks) fn(pageIdx);
 }

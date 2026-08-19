@@ -55,11 +55,19 @@
 // and still bills. Both checks only stop NEW work from being launched —
 // the UI copy in openQueueSetup says this explicitly rather than implying
 // a guarantee that isn't real.
-const _QUEUE_DEFAULT_BUDGET = 3.00;
+import { getCachedChapter, refreshCacheUI, setCachedChapter } from './cache.js';
+import { _fmtCost, _readLifetime } from './cost-tracker.js';
+import { _getMangaFeed, fetchChapterMeta, fetchPageUrls, parseChapterId } from './mangadex-api.js';
+import { _ocrTranslatePages, _validateApiKeyOrToast } from './pipeline.js';
+import { cancelled, getLangName } from './state-and-constants.js';
+import { getTargetLang } from './translate-client.js';
+import { esc, toast } from './utils.js';
 
-let _queueRun = null;  // { items:[{chapterId,label,status,error?}], cancelled, budgetLimit (always a positive number — see _QUEUE_DEFAULT_BUDGET), startLifetimeCost }
+export const _QUEUE_DEFAULT_BUDGET = 3.00;
 
-function _queuePanelEl() { return document.getElementById('home-queue-panel'); }
+export let _queueRun = null;  // { items:[{chapterId,label,status,error?}], cancelled, budgetLimit (always a positive number — see _QUEUE_DEFAULT_BUDGET), startLifetimeCost }
+
+export function _queuePanelEl() { return document.getElementById('home-queue-panel'); }
 
 /**
  * Builds the list of chapters to queue: starting from `fromChapterId`,
@@ -73,7 +81,7 @@ function _queuePanelEl() { return document.getElementById('home-queue-panel'); }
  * feed — so the caller (openQueueSetup below) can just check .length
  * instead of wrapping every call in try/catch.
  */
-async function resolveNextChapters(fromChapterId, count, signal) {
+export async function resolveNextChapters(fromChapterId, count, signal) {
   let meta;
   try {
     meta = await fetchChapterMeta(fromChapterId, signal);
@@ -122,7 +130,7 @@ async function resolveNextChapters(fromChapterId, count, signal) {
  * openGlossaryModal for the same pattern) rather than a full new modal
  * system for a two-field form.
  */
-async function openQueueSetup() {
+export async function openQueueSetup() {
   if (_queueRun) { toast('A queue is already running — cancel it first to start a new one.'); return; }
   const rawUrl = document.getElementById('chapter-url').value.trim();
   if (!rawUrl) { toast('Paste a MangaDex chapter URL first — the queue starts from there.'); return; }
@@ -171,7 +179,7 @@ async function openQueueSetup() {
   document.body.appendChild(modal);
 }
 
-function _confirmStartQueue(fromChapterId) {
+export function _confirmStartQueue(fromChapterId) {
   const count  = Math.max(1, Math.min(30, parseInt(document.getElementById('queue-count').value, 10) || 5));
   const budgetRaw = document.getElementById('queue-budget').value.trim();
   const budgetLimit = parseFloat(budgetRaw);
@@ -187,7 +195,7 @@ function _confirmStartQueue(fromChapterId) {
 }
 
 // ── The actual run ───────────────────────────────────────────────
-async function startQueue(fromChapterId, count, budgetLimit) {
+export async function startQueue(fromChapterId, count, budgetLimit) {
   const targetLang = getTargetLang();
   const controller = new AbortController();
 
@@ -251,7 +259,7 @@ async function startQueue(fromChapterId, count, budgetLimit) {
 // why it's measured this way) has reached its budgetLimit. Cheap/sync —
 // _readLifetime() is a plain localStorage read — so this is safe to call
 // as often as once per page, not just once per chapter.
-function _isQueueBudgetExceeded() {
+export function _isQueueBudgetExceeded() {
   if (!_queueRun) return false;
   const spentSoFar = _readLifetime().total - _queueRun.startLifetimeCost;
   return spentSoFar >= _queueRun.budgetLimit;
@@ -261,7 +269,7 @@ function _isQueueBudgetExceeded() {
 // leaving them at 'pending' forever, which would look like the queue hung
 // rather than that it deliberately stopped — same reasoning as the
 // pre-existing per-chapter check this replaces/extends.
-function _stopQueueOnBudget() {
+export function _stopQueueOnBudget() {
   if (!_queueRun) return;
   for (const rest of _queueRun.items) {
     if (rest.status === 'pending' || rest.status === 'working') rest.status = 'skipped';
@@ -292,7 +300,7 @@ function _stopQueueOnBudget() {
  * see this file's header for why that's true of any client-side budget,
  * not something a tighter check here could fully close.
  */
-async function _runQueueItem(item, targetLang, signal) {
+export async function _runQueueItem(item, targetLang, signal) {
   const meta = await fetchChapterMeta(item.chapterId, signal);
   const sourceLang = meta.translatedLanguage;
 
@@ -313,7 +321,7 @@ async function _runQueueItem(item, targetLang, signal) {
   setCachedChapter(item.chapterId, { meta, targetLang, pageRegions });
 }
 
-function cancelQueue() {
+export function cancelQueue() {
   if (_queueRun) _queueRun.cancelled = true;
   if (_queueRun?.controller) _queueRun.controller.abort();
   _queueRun = null;
@@ -322,7 +330,7 @@ function cancelQueue() {
 }
 
 // ── UI: progress panel (mirrors downloads.js's _renderDlPanel) ──────
-function _renderQueuePanel() {
+export function _renderQueuePanel() {
   const panel = _queuePanelEl();
   if (!panel) return;
   if (!_queueRun) { panel.innerHTML = ''; panel.classList.remove('active'); return; }

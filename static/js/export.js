@@ -11,6 +11,14 @@
 // _activeChapterId, and the DOM elements those modules already render
 // (manga-title/chapter-info) rather than tracking its own copy of state.
 
+import { getEffectivePageRegions } from './cache.js';
+import { openCorrection } from './correction-ui.js';
+import { imageRefBody } from './local-source.js';
+import { _pageStore } from './ocr-client.js';
+import { _activeChapterId } from './state-and-constants.js';
+import { esc, getAiInpaintSetting, toast } from './utils.js';
+import { buildZip } from './zip-writer.js';
+
 /**
  * Build the region list to export for one page, preferring saved
  * correction-UI edits (mtl_corr_<chapterId>_<pageIdx> in localStorage) over
@@ -19,7 +27,7 @@
  * sortedRegions/autoRegions if the page was never opened in the correction
  * UI. Filters out regions the correction UI marked deleted.
  */
-function _exportRegionsForPage(pageIdx) {
+export function _exportRegionsForPage(pageIdx) {
   const pd = _pageStore.get(`${_activeChapterId}_${pageIdx}`);
   const base = pd?.sortedRegions || pd?.autoRegions || [];
   const fallback = base.map(r => ({
@@ -39,7 +47,7 @@ function _exportRegionsForPage(pageIdx) {
  * (never translated, so nothing was ever stored) or a chapter whose pages
  * haven't finished loading yet.
  */
-function _collectChapterExportPayload() {
+export function _collectChapterExportPayload() {
   if (!_activeChapterId) return null;
 
   // Find total page count + each page's CDN url from whichever _pageStore
@@ -66,7 +74,7 @@ function _collectChapterExportPayload() {
   return pages.length ? pages : null;
 }
 
-function _sanitizeForFilename(s) {
+export function _sanitizeForFilename(s) {
   return (s || 'chapter').replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 60) || 'chapter';
 }
 
@@ -74,11 +82,11 @@ function _sanitizeForFilename(s) {
 // EXPORT STATE — one entry per page in the currently-open export run.
 // status: 'pending' | 'working' | 'done' | 'error'
 // ══════════════════════════════════════════════
-let _exportRun = null; // { label, items: [{pageIdx, url, regions, status, blob, error}] }
+export let _exportRun = null; // { label, items: [{pageIdx, url, regions, status, blob, error}] }
 
-function _exportPanelEl() { return document.getElementById('export-panel'); }
+export function _exportPanelEl() { return document.getElementById('export-panel'); }
 
-function _renderExportPanel() {
+export function _renderExportPanel() {
   const panel = _exportPanelEl();
   if (!panel || !_exportRun) return;
 
@@ -118,13 +126,13 @@ function _renderExportPanel() {
   `;
 }
 
-function _closeExportPanel() {
+export function _closeExportPanel() {
   _exportRun = null;
   const panel = _exportPanelEl();
   if (panel) { panel.innerHTML = ''; panel.classList.remove('active'); }
 }
 
-function _jumpToCorrection(pageIdx) {
+export function _jumpToCorrection(pageIdx) {
   const card = document.getElementById(`page-${pageIdx}`);
   if (!card) {
     toast(`Page ${pageIdx + 1} isn't rendered on screen — scroll to it first, then use ✏ CORRECT.`);
@@ -135,7 +143,7 @@ function _jumpToCorrection(pageIdx) {
 }
 
 /** Run one page through /export-page, updating its status in _exportRun in place. */
-async function _runExportItem(item, label) {
+export async function _runExportItem(item, label) {
   item.status = 'working';
   _renderExportPanel();
   try {
@@ -163,7 +171,7 @@ async function _runExportItem(item, label) {
   _renderExportPanel();
 }
 
-async function _retryExportPage(pageIdx) {
+export async function _retryExportPage(pageIdx) {
   if (!_exportRun) return;
   const item = _exportRun.items.find(i => i.pageIdx === pageIdx);
   if (!item) return;
@@ -173,7 +181,7 @@ async function _retryExportPage(pageIdx) {
   await _runExportItem(item, _exportRun.label);
 }
 
-function _downloadExportZip() {
+export function _downloadExportZip() {
   if (!_exportRun) return;
   const done = _exportRun.items.filter(i => i.status === 'done');
   if (!done.length) { toast('No pages finished yet.'); return; }
@@ -202,9 +210,9 @@ function _downloadExportZip() {
 // that's the single most common "now what?" moment for anyone exporting
 // for the first time — so spell it out once per session, dismissible.
 // ══════════════════════════════════════════════
-let _downloadGuideDismissed = false;
+export let _downloadGuideDismissed = false;
 
-function _showDownloadGuide(filename, panelId = 'export-panel') {
+export function _showDownloadGuide(filename, panelId = 'export-panel') {
   if (_downloadGuideDismissed) return;
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
   const shortcut = isMac ? '⌥⌘L (Option+Cmd+L)' : 'Ctrl+J';
@@ -227,7 +235,7 @@ function _showDownloadGuide(filename, panelId = 'export-panel') {
   _downloadGuideDismissed = true; // only show once per session — don't nag on every retry-download
 }
 
-async function exportTypesetChapter() {
+export async function exportTypesetChapter() {
   const pages = _collectChapterExportPayload();
   if (!pages) {
     toast('Nothing to export yet — this chapter has no stored translations ' +

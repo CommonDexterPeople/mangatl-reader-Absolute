@@ -6,9 +6,12 @@
 // ══════════════════════════════════════════════
 // CACHE  (regions only — page URLs always re-fetched)
 // ══════════════════════════════════════════════
-const CACHE_PREFIX  = 'mtl_ch_';
-const CACHE_TTL     = 7 * 24 * 60 * 60 * 1000;
-const CACHE_MAX     = 20;   // FIX #6: proactive entry-count cap
+import { _activeChapterId } from './state-and-constants.js';
+import { toast } from './utils.js';
+
+export const CACHE_PREFIX  = 'mtl_ch_';
+export const CACHE_TTL     = 7 * 24 * 60 * 60 * 1000;
+export const CACHE_MAX     = 20;   // FIX #6: proactive entry-count cap
 // Bump CACHE_V whenever the stored region format changes in a breaking way.
 // Old entries without this version are silently dropped and re-fetched.
 // v2: fixes badge positions — old caches may have fractional (0–1) x/y coords
@@ -31,9 +34,9 @@ const CACHE_MAX     = 20;   // FIX #6: proactive entry-count cap
 //     with it (a 800x6000 strip came out ~160px wide). The resize now grows
 //     its height budget with the page's own aspect ratio instead. See the
 //     resize block at the top of _ocr_gemini_vision() in server.py.
-const CACHE_V = 6;
+export const CACHE_V = 6;
 
-function getCachedChapter(chapterId) {
+export function getCachedChapter(chapterId) {
   try {
     const raw = localStorage.getItem(CACHE_PREFIX + chapterId);
     if (!raw) return null;
@@ -51,7 +54,7 @@ function getCachedChapter(chapterId) {
   } catch { return null; }
 }
 
-function setCachedChapter(chapterId, data) {
+export function setCachedChapter(chapterId, data) {
   // FIX #6: proactively drop oldest entries when over the cap, then keep
   // evicting on quota errors until the write eventually succeeds.
   const getKeys = () => Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX));
@@ -72,7 +75,7 @@ function setCachedChapter(chapterId, data) {
 }
 
 // Returns the removed key, or null if nothing to evict
-function evictOldestCache() {
+export function evictOldestCache() {
   const keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX));
   if (!keys.length) return null;
   let oldestKey = keys[0], oldestTime = Infinity;
@@ -87,24 +90,24 @@ function evictOldestCache() {
 }
 
 // ── Cache info helpers ────────────────────────
-function _getCacheKeys() {
+export function _getCacheKeys() {
   return Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX));
 }
 
-function _getCacheSize() {
+export function _getCacheSize() {
   const keys = _getCacheKeys();
   let bytes = 0;
   keys.forEach(k => { try { bytes += (localStorage.getItem(k) || '').length * 2; } catch {} });
   return { count: keys.length, bytes };
 }
 
-function _fmtBytes(b) {
+export function _fmtBytes(b) {
   if (b < 1024)       return b + ' B';
   if (b < 1024*1024)  return (b/1024).toFixed(1) + ' KB';
   return (b/1024/1024).toFixed(2) + ' MB';
 }
 
-function _refreshCacheUICore() {
+export function _refreshCacheUICore() {
   const { count, bytes } = _getCacheSize();
 
   // ── Reader header pill ──
@@ -132,7 +135,7 @@ function _refreshCacheUICore() {
   if (btn) btn.disabled = count === 0;
 }
 
-function clearCache() {
+export function clearCache() {
   const keys = _getCacheKeys();
   keys.forEach(k => localStorage.removeItem(k));
   const n = keys.length;
@@ -140,8 +143,8 @@ function clearCache() {
   refreshCacheUI();
 }
 
-function clearCacheFromHome()   { clearCache(); }
-function clearCacheFromReader() {
+export function clearCacheFromHome()   { clearCache(); }
+export function clearCacheFromReader() {
   clearCache();
   // Also show confirmation near the pill
   const lbl = document.getElementById('reader-cache-label');
@@ -151,7 +154,7 @@ function clearCacheFromReader() {
   }
 }
 
-function updatePageInCache(pageIdx, regions) {
+export function updatePageInCache(pageIdx, regions) {
   if (!_activeChapterId) return;
   try {
     const raw = localStorage.getItem(CACHE_PREFIX + _activeChapterId);
@@ -178,7 +181,7 @@ function updatePageInCache(pageIdx, regions) {
 // which made a fresh chapter-open (or a home-screen download) silently
 // revert to the pre-correction version even though the corrected data was
 // safely sitting in localStorage the whole time.
-function getEffectivePageRegions(chapterId, pageIdx, fallbackRegions) {
+export function getEffectivePageRegions(chapterId, pageIdx, fallbackRegions) {
   try {
     const raw = localStorage.getItem(`mtl_corr_${chapterId}_${pageIdx}`);
     if (raw) {
@@ -207,11 +210,11 @@ function getEffectivePageRegions(chapterId, pageIdx, fallbackRegions) {
 // this module owns the seam, downloads.js subscribes to it. clearCache() and
 // setCachedChapter() still call refreshCacheUI() without knowing downloads.js
 // exists, which was the point of the original wrapper.
-const _afterCacheUIRefreshHooks = [];
+export const _afterCacheUIRefreshHooks = [];
 
-function onAfterCacheUIRefresh(fn) { _afterCacheUIRefreshHooks.push(fn); }
+export function onAfterCacheUIRefresh(fn) { _afterCacheUIRefreshHooks.push(fn); }
 
-function refreshCacheUI() {
+export function refreshCacheUI() {
   _refreshCacheUICore();
   for (const fn of _afterCacheUIRefreshHooks) fn();
 }

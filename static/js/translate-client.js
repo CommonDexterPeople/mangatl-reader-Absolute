@@ -9,10 +9,15 @@
 // ══════════════════════════════════════════════
 
 // FIX #2: valid type set used to sanitise AI classification output
-const VALID_TEXT_TYPES = new Set(['speech', 'thought', 'sfx', 'narration', 'sign']);
+import { recordUsage } from './cost-tracker.js';
+import { _activeGlossaryKey, buildGlossaryPromptBlock } from './glossary.js';
+import { getLangName } from './state-and-constants.js';
+import { toast, waitForGeminiSlot } from './utils.js';
+
+export const VALID_TEXT_TYPES = new Set(['speech', 'thought', 'sfx', 'narration', 'sign']);
 
 // Model registry — value format: "provider|model-id"
-const MODEL_INFO = {
+export const MODEL_INFO = {
   // Gemini models
   'gemini|gemini-3.5-flash':              { provider: 'gemini',   placeholder: 'AIza…', label: 'Gemini 3.5 Flash',       keyUrl: 'https://aistudio.google.com/app/apikey', keySite: 'aistudio.google.com' },
   'gemini|gemini-3.1-flash-lite':         { provider: 'gemini',   placeholder: 'AIza…', label: 'Gemini 3.1 Flash-Lite',  keyUrl: 'https://aistudio.google.com/app/apikey', keySite: 'aistudio.google.com' },
@@ -30,17 +35,17 @@ const MODEL_INFO = {
   'deepl|deepl':                          { provider: 'deepl',    placeholder: '…:fx or a Pro key', label: 'DeepL', keyUrl: 'https://www.deepl.com/en/pro#developer', keySite: 'deepl.com/pro#developer' },
 };
 
-function getModelInfo() {
+export function getModelInfo() {
   const val = document.getElementById('ai-model')?.value || 'gemini|gemini-3.5-flash';
   return MODEL_INFO[val] || MODEL_INFO['gemini|gemini-3.5-flash'];
 }
 
-function getModelId() {
+export function getModelId() {
   const val = document.getElementById('ai-model')?.value || '';
   return val.split('|')[1] || 'gemini-3.5-flash';
 }
 
-function onModelChange() {
+export function onModelChange() {
   const info     = getModelInfo();
   const keyEl    = document.getElementById('ai-key');
   const linkEl   = document.getElementById('ai-key-link');
@@ -128,7 +133,7 @@ function onModelChange() {
 // dropdown; translateBatchDeepL() still double-checks against the live list
 // before actually sending a request, this is just an upfront UI hint so the
 // user isn't surprised by an error after already correcting a chapter.
-function _updateTargetLangDeepLSupport(provider) {
+export function _updateTargetLangDeepLSupport(provider) {
   const sel = document.getElementById('target-lang');
   if (!sel) return;
   const isDeepL = provider === 'deepl';
@@ -165,7 +170,7 @@ function _updateTargetLangDeepLSupport(provider) {
 
 
 // ── Target language dropdown ──────────────────
-function onTargetLangChange() {
+export function onTargetLangChange() {
   const sel    = document.getElementById('target-lang');
   const custom = document.getElementById('target-lang-custom');
   const isCustom = sel.value === '__custom__';
@@ -176,7 +181,7 @@ function onTargetLangChange() {
 }
 
 // Returns the effective target language string for the AI prompt
-function getTargetLang() {
+export function getTargetLang() {
   const sel = document.getElementById('target-lang');
   if (sel.value === '__custom__') {
     const customEl = document.getElementById('target-lang-custom');
@@ -188,7 +193,7 @@ function getTargetLang() {
 // The API key is forwarded by the proxy and never appears in DevTools.
 // translateBatch accepts regions [{text,cx,cy}] — cx/cy help the AI
 // understand panel layout and infer reading order.
-async function translateBatch(regions, sourceLang, targetLang, signal) {
+export async function translateBatch(regions, sourceLang, targetLang, signal) {
   if (!regions.length) return [];
   const key      = document.getElementById('ai-key').value.trim();
   const info     = getModelInfo();
@@ -518,10 +523,10 @@ async function translateBatch(regions, sourceLang, targetLang, signal) {
 // single sitting, so there's no reason to refetch it every translateBatch()
 // call — same "fetch once per session, not once per call" pattern
 // _loadRates() already uses in cost-tracker.js.
-let _deepLLangCache = null;   // { key: apiKey, languages: [{code,name}, …] } | null
-let _deepLLangPromise = null; // in-flight fetch, shared across concurrent callers
+export let _deepLLangCache = null;   // { key: apiKey, languages: [{code,name}, …] } | null
+export let _deepLLangPromise = null; // in-flight fetch, shared across concurrent callers
 
-async function _loadDeepLLanguages(key) {
+export async function _loadDeepLLanguages(key) {
   if (_deepLLangCache && _deepLLangCache.key === key) return _deepLLangCache.languages;
   if (_deepLLangPromise) return _deepLLangPromise;
   _deepLLangPromise = (async () => {
@@ -564,7 +569,7 @@ async function _loadDeepLLanguages(key) {
 // Tamil, Burmese, Persian, and Swahili — all of which the actual
 // /v2/translate API supports fine. Only Khmer is genuinely absent from
 // DeepL's API language table as of this check.
-const _DEEPL_TARGET_LANG_MAP = {
+export const _DEEPL_TARGET_LANG_MAP = {
   // 'EN' (bare, no regional variant) is NOT what DeepL's own
   // /v2/languages?type=target endpoint actually lists — it lists EN-GB and
   // EN-US as concrete target variants. Using bare 'EN' here made the live-
@@ -640,7 +645,7 @@ const _DEEPL_TARGET_LANG_MAP = {
  * gap between provider shapes. Worth surfacing in the glossary modal's
  * copy if DeepL users report this as confusing in practice.
  */
-async function translateBatchDeepL(regions, items, sendItems, isNoise, key, sourceLang, targetLang, signal) {
+export async function translateBatchDeepL(regions, items, sendItems, isNoise, key, sourceLang, targetLang, signal) {
   const deepLTarget = _DEEPL_TARGET_LANG_MAP[targetLang];
   if (!deepLTarget) {
     throw new Error(

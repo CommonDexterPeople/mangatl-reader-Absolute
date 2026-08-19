@@ -43,7 +43,7 @@
 // env var server-side instead of editing the constant).
 // ═══════════════════════════════════════════════════════════════
 
-const SUWAYOMI_BASE = 'http://127.0.0.1:4567'; // must match SUWAYOMI_HOST in server.py
+export const SUWAYOMI_BASE = 'http://127.0.0.1:4567'; // must match SUWAYOMI_HOST in server.py
 
 /**
  * Fetches a single chapter's page list from Suwayomi and returns it in the
@@ -57,7 +57,7 @@ const SUWAYOMI_BASE = 'http://127.0.0.1:4567'; // must match SUWAYOMI_HOST in se
  *                  this has to come from whoever's calling this — same
  *                  requirement chapterFromFileList()/chapterFromCbz() have.
  */
-async function chapterFromSuwayomi(mangaId, chapterIndex, sourceLang) {
+export async function chapterFromSuwayomi(mangaId, chapterIndex, sourceLang) {
   const detailUrl = `${SUWAYOMI_BASE}/api/v1/manga/${mangaId}/chapter/${chapterIndex}`;
   let meta;
   try {

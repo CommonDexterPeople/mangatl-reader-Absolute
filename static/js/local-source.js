@@ -39,27 +39,31 @@
 // Holds the actual image Blob for every local page, for the lifetime of
 // this tab. Blobs are never sent to the server as a whole file — only
 // base64-encoded per OCR/crop/export request, on demand.
-const _localBlobStore = new Map();   // "local-blob:<id>" -> Blob
-let _localBlobSeq = 0;
+import { _validateApiKeyOrToast, startPipelineWithLocalSource } from './pipeline.js';
+import { getTargetLang } from './translate-client.js';
+import { toast } from './utils.js';
 
-function registerLocalBlob(blob) {
+export const _localBlobStore = new Map();   // "local-blob:<id>" -> Blob
+export let _localBlobSeq = 0;
+
+export function registerLocalBlob(blob) {
   const id = `local-blob:${Date.now().toString(36)}-${(_localBlobSeq++).toString(36)}`;
   _localBlobStore.set(id, blob);
   return id;
 }
 
-function isLocalRef(cdnRef) {
+export function isLocalRef(cdnRef) {
   return typeof cdnRef === 'string' && cdnRef.startsWith('local-blob:');
 }
 
 // Frees every local page's Blob + object URL. Called from goBack() (utils.js)
 // alongside the rest of the per-chapter cleanup, and safe to call even when
 // nothing local was ever opened (both Maps are just empty then).
-function clearLocalBlobStore() {
+export function clearLocalBlobStore() {
   _localBlobStore.clear();
 }
 
-function _blobToBase64(blob) {
+export function _blobToBase64(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload  = () => {
@@ -79,7 +83,7 @@ function _blobToBase64(blob) {
  * image_b64 for a local page; every other field in the request is
  * unaffected — see _load_image_bytes() in server.py for the receiving end.
  */
-async function imageRefBody(cdnRef) {
+export async function imageRefBody(cdnRef) {
   if (isLocalRef(cdnRef)) {
     const blob = _localBlobStore.get(cdnRef);
     if (!blob) throw new Error('This local page is no longer available — reopen the folder/CBZ to retry.');
@@ -89,21 +93,21 @@ async function imageRefBody(cdnRef) {
 }
 
 // ── Filename filtering + ordering ───────────────────────────────
-const _IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp)$/i;
+export const _IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|bmp)$/i;
 
 // Skip macOS resource-fork junk, hidden files, and the CBZ metadata
 // sidecar (ComicInfo.xml) that isn't a page image at all.
-function _isJunkPath(path) {
+export function _isJunkPath(path) {
   const base = path.split('/').pop() || '';
   return path.includes('__MACOSX/') || base.startsWith('.') ||
          base.toLowerCase() === 'comicinfo.xml';
 }
 
-function _isImagePath(path) {
+export function _isImagePath(path) {
   return _IMAGE_EXT_RE.test(path) && !_isJunkPath(path);
 }
 
-function _mimeForPath(path) {
+export function _mimeForPath(path) {
   const ext = (path.match(_IMAGE_EXT_RE)?.[1] || '').toLowerCase();
   return {
     jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
@@ -114,7 +118,7 @@ function _mimeForPath(path) {
 // Natural sort: "page2.jpg" before "page10.jpg", not after — plain string
 // sort would put "page10" before "page2". Splits into digit / non-digit
 // runs and compares digit runs numerically, everything else lexically.
-function _naturalCompare(a, b) {
+export function _naturalCompare(a, b) {
   const re = /(\d+)|(\D+)/g;
   const ax = a.match(re) || [];
   const bx = b.match(re) || [];
@@ -131,7 +135,7 @@ function _naturalCompare(a, b) {
   return 0;
 }
 
-function _titleFromName(name) {
+export function _titleFromName(name) {
   return name.replace(/\.(cbz|zip)$/i, '').replace(/[_\.]+/g, ' ').trim() || 'Local chapter';
 }
 
@@ -152,11 +156,11 @@ function _titleFromName(name) {
 // old zip tools instead used CP437 for non-ASCII names with the flag
 // unset, which this doesn't special-case — an uncommon-enough case for a
 // manga-page filename that it's called out here rather than solved.
-const _EOCD_SIG = 0x06054b50;
-const _CDFH_SIG = 0x02014b50;
-const _LFH_SIG  = 0x04034b50;
+export const _EOCD_SIG = 0x06054b50;
+export const _CDFH_SIG = 0x02014b50;
+export const _LFH_SIG  = 0x04034b50;
 
-function _findEndOfCentralDirectory(view) {
+export function _findEndOfCentralDirectory(view) {
   // EOCD is a fixed 22-byte record, optionally followed by a comment (up
   // to 65535 bytes) — search backwards from the end rather than assuming
   // a zero-length comment.
@@ -168,7 +172,7 @@ function _findEndOfCentralDirectory(view) {
   throw new Error('Not a valid .cbz/.zip file (no end-of-central-directory record found).');
 }
 
-async function _inflateRaw(bytes) {
+export async function _inflateRaw(bytes) {
   const ds = new DecompressionStream('deflate-raw');
   const stream = new Blob([bytes]).stream().pipeThrough(ds);
   return new Uint8Array(await new Response(stream).arrayBuffer());
@@ -178,7 +182,7 @@ async function _inflateRaw(bytes) {
  * Parse a .cbz/.zip ArrayBuffer and return every non-directory entry as
  * { name, bytes: Uint8Array }, in central-directory order (caller sorts).
  */
-async function _readZipEntries(arrayBuffer) {
+export async function _readZipEntries(arrayBuffer) {
   const view  = new DataView(arrayBuffer);
   const bytes = new Uint8Array(arrayBuffer);
 
@@ -238,7 +242,7 @@ async function _readZipEntries(arrayBuffer) {
 }
 
 // ── High-level chapter builders ─────────────────────────────────
-function _buildLocalChapter(kind, title, sourceLang, orderedFiles) {
+export function _buildLocalChapter(kind, title, sourceLang, orderedFiles) {
   // orderedFiles: [{ name, blob }], already sorted
   const pages = orderedFiles.map(f => ({
     cdn: registerLocalBlob(f.blob),
@@ -254,7 +258,7 @@ function _buildLocalChapter(kind, title, sourceLang, orderedFiles) {
 }
 
 /** Build a local chapter from a FileList (e.g. <input webkitdirectory>). */
-async function chapterFromFileList(fileList, sourceLang) {
+export async function chapterFromFileList(fileList, sourceLang) {
   const all = Array.from(fileList);
   const images = all
     .filter(f => _isImagePath(f.webkitRelativePath || f.name))
@@ -273,7 +277,7 @@ async function chapterFromFileList(fileList, sourceLang) {
 }
 
 /** Build a local chapter from a .cbz/.zip File. */
-async function chapterFromCbz(file, sourceLang) {
+export async function chapterFromCbz(file, sourceLang) {
   const arrayBuffer = await file.arrayBuffer();
   const entries = await _readZipEntries(arrayBuffer);
   const images = entries
@@ -292,18 +296,18 @@ async function chapterFromCbz(file, sourceLang) {
 }
 
 // ── Home-screen wiring ───────────────────────────────────────────
-function toggleLocalSource() {
+export function toggleLocalSource() {
   document.getElementById('local-source-wrap')?.classList.toggle('open');
 }
 
-function _localSourceLang() {
+export function _localSourceLang() {
   return document.getElementById('local-source-lang')?.value || 'ja';
 }
 
-function triggerLocalFolderPicker() { document.getElementById('local-folder-input')?.click(); }
-function triggerLocalCbzPicker()    { document.getElementById('local-cbz-input')?.click(); }
+export function triggerLocalFolderPicker() { document.getElementById('local-folder-input')?.click(); }
+export function triggerLocalCbzPicker()    { document.getElementById('local-cbz-input')?.click(); }
 
-async function handleLocalFolderInput(event) {
+export async function handleLocalFolderInput(event) {
   const files = event.target.files;
   event.target.value = '';  // allow picking the same folder again later
   if (!files || !files.length) return;
@@ -317,7 +321,7 @@ async function handleLocalFolderInput(event) {
   }
 }
 
-async function handleLocalCbzInput(event) {
+export async function handleLocalCbzInput(event) {
   const file = event.target.files?.[0];
   event.target.value = '';
   if (!file) return;

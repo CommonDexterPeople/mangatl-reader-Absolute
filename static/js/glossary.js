@@ -32,15 +32,17 @@
 // _activeChapterId itself is handled.
 // ═══════════════════════════════════════════════════════════════
 
-const GLOS_PREFIX  = 'mtl_glos_';
-const GLOS_NAME_PREFIX = 'mtl_glos_name_';  // key -> display name, for the modal header
-const GLOS_MAX     = 50;    // cap on distinct glossaries (series), mirrors CACHE_MAX's shape
-const GLOS_TERM_CAP = 30;   // cap on terms PER glossary — see buildGlossaryPromptBlock's
-                             // comment for why this matters for token budget, not just tidiness
-const GLOS_V        = 1;
+import { esc, toast } from './utils.js';
 
-let _activeGlossaryKey  = null;   // localStorage key suffix for the current chapter's series
-let _activeGlossaryName = '';     // display name shown in the modal header + quick-add button
+export const GLOS_PREFIX  = 'mtl_glos_';
+export const GLOS_NAME_PREFIX = 'mtl_glos_name_';  // key -> display name, for the modal header
+export const GLOS_MAX     = 50;    // cap on distinct glossaries (series), mirrors CACHE_MAX's shape
+export const GLOS_TERM_CAP = 30;   // cap on terms PER glossary — see buildGlossaryPromptBlock's
+                             // comment for why this matters for token budget, not just tidiness
+export const GLOS_V        = 1;
+
+export let _activeGlossaryKey  = null;   // localStorage key suffix for the current chapter's series
+export let _activeGlossaryName = '';     // display name shown in the modal header + quick-add button
 
 // ── Key resolution ────────────────────────────────────────────────
 // mangaId when present (MangaDex/Suwayomi) -> "id:<mangaId>".
@@ -48,11 +50,11 @@ let _activeGlossaryName = '';     // display name shown in the modal header + qu
 // defaulting to the chapter/file's own title. Slugged so trivial
 // differences (case, extra whitespace) from re-picking "the same" local
 // folder twice don't silently fork into two glossaries.
-function _slugifyGlossaryName(name) {
+export function _slugifyGlossaryName(name) {
   return (name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'untitled';
 }
 
-function _glossaryKeyFor(mangaId, fallbackName) {
+export function _glossaryKeyFor(mangaId, fallbackName) {
   if (mangaId) return `id:${mangaId}`;
   return `name:${_slugifyGlossaryName(fallbackName)}`;
 }
@@ -73,14 +75,14 @@ function _glossaryKeyFor(mangaId, fallbackName) {
 // quick-add from Correct UI works immediately without forcing a modal
 // detour first); confirming just lets the user rename it before terms
 // pile up under a name they didn't choose.
-function setActiveGlossary(mangaId, mangaTitle) {
+export function setActiveGlossary(mangaId, mangaTitle) {
   _activeGlossaryKey  = _glossaryKeyFor(mangaId, mangaTitle);
   _activeGlossaryName = (mangaId ? mangaTitle : localStorage.getItem(GLOS_NAME_PREFIX + _activeGlossaryKey))
                         || mangaTitle || 'Untitled';
 }
 
 // ── Storage ───────────────────────────────────────────────────────
-function _getGlossaryTerms(key) {
+export function _getGlossaryTerms(key) {
   if (!key) return [];
   try {
     const raw = localStorage.getItem(GLOS_PREFIX + key);
@@ -91,7 +93,7 @@ function _getGlossaryTerms(key) {
   } catch { return []; }
 }
 
-function _setGlossaryTerms(key, terms, displayName) {
+export function _setGlossaryTerms(key, terms, displayName) {
   if (!key) return;
   const capped = terms.slice(0, GLOS_TERM_CAP);
   const getKeys = () => Object.keys(localStorage).filter(k => k.startsWith(GLOS_PREFIX));
@@ -124,7 +126,7 @@ function _setGlossaryTerms(key, terms, displayName) {
 // with no glossary produces a byte-identical prompt to today, same
 // "zero cost/behavior change if you never touch this feature" contract
 // AI inpaint and Vision OCR both already follow elsewhere in this app.
-function buildGlossaryPromptBlock(key) {
+export function buildGlossaryPromptBlock(key) {
   const terms = _getGlossaryTerms(key);
   if (!terms.length) return '';
   // Capped at GLOS_TERM_CAP terms (enforced at write time in
@@ -149,9 +151,9 @@ function buildGlossaryPromptBlock(key) {
 // name-keyed chapter this session, ask once. Declining just keeps the
 // default (chapter/file title) — this is a rename prompt, not a gate;
 // quick-add from Correct UI never blocks on it.
-const _glossaryNameConfirmedThisSession = new Set();
+export const _glossaryNameConfirmedThisSession = new Set();
 
-function maybeConfirmGlossaryName() {
+export function maybeConfirmGlossaryName() {
   if (!_activeGlossaryKey || !_activeGlossaryKey.startsWith('name:')) return;
   if (_glossaryNameConfirmedThisSession.has(_activeGlossaryKey)) return;
   _glossaryNameConfirmedThisSession.add(_activeGlossaryKey);
@@ -190,7 +192,7 @@ function maybeConfirmGlossaryName() {
 //
 // prefill: optional {src, tl} to seed a new blank row with — used by the
 // "+ Glossary" quick-add button in correction-ui.js's sidebar.
-function openGlossaryModal(prefill) {
+export function openGlossaryModal(prefill) {
   if (!_activeGlossaryKey) { toast('Load a chapter first.'); return; }
   maybeConfirmGlossaryName();
 
@@ -204,7 +206,7 @@ function openGlossaryModal(prefill) {
   _renderGlossaryModal(terms);
 }
 
-function _renderGlossaryModal(terms) {
+export function _renderGlossaryModal(terms) {
   const rowsHtml = terms.map((t, i) => `
     <div class="flow-issue-row glossary-row">
       <input class="corr-textarea glossary-input" data-i="${i}" data-f="src"
@@ -239,7 +241,7 @@ function _renderGlossaryModal(terms) {
   document.body.appendChild(modal);
 }
 
-function _readGlossaryModalRows() {
+export function _readGlossaryModalRows() {
   const rows = Array.from(document.querySelectorAll('#glossary-rows .glossary-row'));
   return rows.map(row => {
     const get = f => row.querySelector(`[data-f="${f}"]`)?.value ?? '';
@@ -247,20 +249,20 @@ function _readGlossaryModalRows() {
   });
 }
 
-function _addGlossaryRow() {
+export function _addGlossaryRow() {
   const terms = _readGlossaryModalRows();
   if (terms.length >= GLOS_TERM_CAP) { toast(`Glossary cap is ${GLOS_TERM_CAP} terms.`); return; }
   terms.push({ src: '', tl: '', note: '' });
   _renderGlossaryModal(terms);
 }
 
-function _removeGlossaryRow(i) {
+export function _removeGlossaryRow(i) {
   const terms = _readGlossaryModalRows();
   terms.splice(i, 1);
   _renderGlossaryModal(terms);
 }
 
-function _saveGlossaryModal() {
+export function _saveGlossaryModal() {
   const terms = _readGlossaryModalRows().filter(t => t.src.trim() || t.tl.trim());
   _setGlossaryTerms(_activeGlossaryKey, terms, _activeGlossaryName);
   document.getElementById('glossary-modal')?.remove();

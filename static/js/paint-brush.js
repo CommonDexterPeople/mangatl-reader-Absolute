@@ -27,21 +27,24 @@
 // getFinalErasedBlob() / getPrePaintPatches(), not per stroke.
 // ═══════════════════════════════════════════════════════════════
 
-let _brushCanvas = null;    // visible <canvas>, drawn at natural image resolution
-let _brushCtx = null;
-let _brushActive = false;   // paint mode toggled on/off
-let _brushSize = 24;        // brush diameter in *displayed* px (scaled to natural px when painting)
-let _brushDirty = false;    // true once at least one stroke has been painted
-let _brushDrawing = false;
-let _brushMode = 'post';    // 'post' (touch up erase result) | 'pre' (paint before erase)
-let _peekingOriginal = false; // true while showing the pre-erase original instead of the result (post mode only)
+import { _eraseImgMeta, _eraseOverlayCtl, _eraseResultBlob } from './erase-tool.js';
+import { show } from './utils.js';
+
+export let _brushCanvas = null;    // visible <canvas>, drawn at natural image resolution
+export let _brushCtx = null;
+export let _brushActive = false;   // paint mode toggled on/off
+export let _brushSize = 24;        // brush diameter in *displayed* px (scaled to natural px when painting)
+export let _brushDirty = false;    // true once at least one stroke has been painted
+export let _brushDrawing = false;
+export let _brushMode = 'post';    // 'post' (touch up erase result) | 'pre' (paint before erase)
+export let _peekingOriginal = false; // true while showing the pre-erase original instead of the result (post mode only)
 
 // ── PRE-erase brush state ─────────────────────────────────────────────────
 // Unlike post-erase (one canvas over one final result), pre-erase painting
 // happens on the source page while multiple boxes exist at once — strokes
 // just accumulate on one full-page canvas positioned over erase-img, and
 // get diffed out per-box at export time (see getPrePaintPatches).
-let _preBrushDirty = false;
+export let _preBrushDirty = false;
 
 /**
  * Call once the erased-page preview is showing (end of _showErasePreview).
@@ -49,7 +52,7 @@ let _preBrushDirty = false;
  * current erase result, layered on top of the image, and shows the brush
  * toolbar. Safe to call again on a fresh erase result — resets brush state.
  */
-function initPaintBrush() {
+export function initPaintBrush() {
   const img = document.getElementById('erase-img');
   const imgWrap = document.getElementById('erase-img-wrap');
   if (!img || !imgWrap || !_eraseResultBlob) return;
@@ -109,7 +112,7 @@ function initPaintBrush() {
  * peek "back" to; that toolbar never mounts this button (see
  * _mountBrushToolbar's pre-mode branch).
  */
-function _eraseTogglePeekOriginal() {
+export function _eraseTogglePeekOriginal() {
   if (_brushMode !== 'post' || !_brushCanvas || !_eraseImgMeta) return;
   _peekingOriginal = !_peekingOriginal;
 
@@ -139,7 +142,7 @@ function _eraseTogglePeekOriginal() {
  * sits above this canvas — see z-index in style.css) still works normally
  * whenever the brush itself isn't active.
  */
-function initPrePaintBrush() {
+export function initPrePaintBrush() {
   const img = document.getElementById('erase-img');
   const imgWrap = document.getElementById('erase-img-wrap');
   if (!img || !imgWrap) return;
@@ -167,7 +170,7 @@ function initPrePaintBrush() {
   else img.addEventListener('load', setup, { once: true });
 }
 
-function _mountBrushToolbar() {
+export function _mountBrushToolbar() {
   const wrap = document.getElementById('erase-canvas-wrap');
   if (!wrap) return;
   let bar = document.getElementById('brush-toolbar');
@@ -213,7 +216,7 @@ function _mountBrushToolbar() {
   });
 }
 
-function toggleBrushMode() {
+export function toggleBrushMode() {
   _brushActive = !_brushActive;
   _mountBrushToolbar();
   _attachOrDetachBrushEvents();
@@ -230,10 +233,10 @@ function toggleBrushMode() {
   }
 }
 
-let _brushMoveHandler = null;
-let _brushUpHandler = null;
+export let _brushMoveHandler = null;
+export let _brushUpHandler = null;
 
-function _attachOrDetachBrushEvents() {
+export function _attachOrDetachBrushEvents() {
   // The brush canvas is the topmost layer while active (see z-index in
   // style.css), so it receives events directly — no need to listen on
   // erase-overlay/erase-img.
@@ -262,7 +265,7 @@ function _attachOrDetachBrushEvents() {
  * (CSS-scaled) canvas coordinates to the canvas's own natural-resolution
  * drawing coordinates. Drawn straight onto the live canvas — no encode
  * step, so this is cheap enough to call on every mousemove sample. */
-function _paintAt(e) {
+export function _paintAt(e) {
   if (!_brushCtx || !_brushCanvas) return;
   const r = _brushCanvas.getBoundingClientRect();
   const px = (e.clientX - r.left) / r.width * _brushCanvas.width;
@@ -289,7 +292,7 @@ function _paintAt(e) {
   }
 }
 
-function _updateBrushCursor() {
+export function _updateBrushCursor() {
   if (!_brushCanvas) return;
   _brushCanvas.style.cursor = _brushActive ? 'cell' : 'crosshair';
   _brushCanvas.style.pointerEvents = _brushActive ? 'auto' : 'none';
@@ -299,7 +302,7 @@ function _updateBrushCursor() {
  * erase result. Pre-erase: just clears the (transparent) overlay canvas,
  * since there's no separate "before" image to restore from — the source
  * <img> underneath was never modified. */
-function resetBrushStrokes() {
+export function resetBrushStrokes() {
   if (!_brushCanvas || !_brushCtx) return;
 
   if (_brushMode === 'pre') {
@@ -330,7 +333,7 @@ function resetBrushStrokes() {
  * an encode happens, once, on demand, rather than per-stroke. Only
  * meaningful in 'post' mode.
  */
-function getFinalErasedBlob() {
+export function getFinalErasedBlob() {
   return new Promise(resolve => {
     if (_brushMode !== 'post' || !_brushDirty || !_brushCanvas) { resolve(_eraseResultBlob); return; }
     _brushCanvas.toBlob(blob => resolve(blob || _eraseResultBlob), 'image/png');
@@ -345,7 +348,7 @@ function getFinalErasedBlob() {
  * transparent (nothing was actually painted inside this specific box —
  * common when someone paints one bubble but not every box on the page).
  */
-function getPrePaintPatchForBox(box) {
+export function getPrePaintPatchForBox(box) {
   if (_brushMode !== 'pre' || !_brushCanvas || !_preBrushDirty) return null;
   const [x1pct, y1pct, x2pct, y2pct] = box;
   const w = _brushCanvas.width, h = _brushCanvas.height;
@@ -382,7 +385,7 @@ function getPrePaintPatchForBox(box) {
 
 /** True if the pre-paint canvas has any strokes on it at all (used to
  * decide whether it's worth checking individual boxes for patches). */
-function hasPrePaintStrokes() {
+export function hasPrePaintStrokes() {
   return _brushMode === 'pre' && _preBrushDirty;
 }
 
@@ -393,7 +396,7 @@ function hasPrePaintStrokes() {
  * (they're not part of _renderEraseCanvas's own innerHTML rebuild, since
  * the canvas is a sibling inside erase-img-wrap and the toolbar is a
  * sibling of erase-canvas-wrap — neither gets cleared automatically). */
-function teardownPaintBrush() {
+export function teardownPaintBrush() {
   _brushCanvas?.remove();
   _brushCanvas = null;
   _brushCtx = null;

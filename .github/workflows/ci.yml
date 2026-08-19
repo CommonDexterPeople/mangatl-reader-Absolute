@@ -94,13 +94,36 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Check every static/js/*.js file parses
+      - name: Check every static/js/*.js file parses as an ES module
+        # static/js is ES modules now, so `node --check <file>` is wrong: it
+        # treats a .js file as a classic script, where import/export is a
+        # syntax error. Feeding the file on stdin with --input-type=module
+        # checks it as what it actually is.
         run: |
           set -e
           for f in static/js/*.js; do
             echo "Checking $f"
-            node --check "$f"
+            node --input-type=module --check < "$f"
           done
+
+      - name: Confirm index.html loads exactly one module entry point
+        # The whole point of the module conversion is that load order lives in
+        # main.js's imports, not in a list of <script> tags here. If someone
+        # re-adds a plain <script src="/static/js/…"> tag, build.py's flattening
+        # would silently miss it.
+        run: |
+          set -e
+          plain=$(grep -c '<script src="/static/js/' static/index.html || true)
+          if [ "$plain" != "0" ]; then
+            echo "index.html has $plain plain <script src=\"/static/js/...\"> tag(s); expected 0 — modules load via main.js"
+            exit 1
+          fi
+          entry=$(grep -c '<script type="module" src="/static/js/main.js">' static/index.html || true)
+          if [ "$entry" != "1" ]; then
+            echo "expected exactly 1 module entry tag for main.js, found $entry"
+            exit 1
+          fi
+          echo "one module entry point, no stray script tags"
 
   build-check:
     name: build.py reassembly check

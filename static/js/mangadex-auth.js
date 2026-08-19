@@ -8,18 +8,20 @@
 // MANGADEX AUTH
 // ══════════════════════════════════════════════
 
-let _mdAccessToken  = null;
-let _mdRefreshToken = null;
-let _mdTokenExpiry  = 0;       // ms timestamp
-let _mdClientId     = '';
-let _mdClientSecret = '';
-let _mdUsername     = '';
+import { toast } from './utils.js';
 
-function toggleMdLogin() {
+export let _mdAccessToken  = null;
+export let _mdRefreshToken = null;
+export let _mdTokenExpiry  = 0;       // ms timestamp
+export let _mdClientId     = '';
+export let _mdClientSecret = '';
+export let _mdUsername     = '';
+
+export function toggleMdLogin() {
   document.getElementById('md-login-wrap').classList.toggle('open');
 }
 
-function _setMdStatus(loggedIn, username = '') {
+export function _setMdStatus(loggedIn, username = '') {
   document.getElementById('md-status-dot').className =
     'md-status-dot' + (loggedIn ? ' online' : '');
   document.getElementById('md-status-text').textContent =
@@ -29,7 +31,7 @@ function _setMdStatus(loggedIn, username = '') {
   btn.onclick     = loggedIn ? logoutMangaDex : loginMangaDex;
 }
 
-function _saveMdTokens(accessToken, refreshToken, expiresIn, username) {
+export function _saveMdTokens(accessToken, refreshToken, expiresIn, username) {
   _mdAccessToken  = accessToken;
   _mdRefreshToken = refreshToken;
   _mdTokenExpiry  = Date.now() + expiresIn * 1000;
@@ -40,7 +42,7 @@ function _saveMdTokens(accessToken, refreshToken, expiresIn, username) {
   localStorage.setItem('mtl_md_username', username);
 }
 
-function _clearMdTokens() {
+export function _clearMdTokens() {
   _mdAccessToken = _mdRefreshToken = null;
   _mdTokenExpiry = 0; _mdUsername = '';
   ['mtl_md_access','mtl_md_refresh','mtl_md_expiry','mtl_md_username'].forEach(k =>
@@ -48,7 +50,7 @@ function _clearMdTokens() {
 }
 
 // Returns a valid access token, refreshing first if needed. Returns null if not logged in.
-async function getMdToken() {
+export async function getMdToken() {
   if (!_mdAccessToken) return null;
   if (Date.now() < _mdTokenExpiry - 60_000) return _mdAccessToken;  // still valid
   // Try to refresh
@@ -72,12 +74,12 @@ async function getMdToken() {
 }
 
 // Returns headers object with Authorization if logged in, otherwise just User-Agent.
-async function getMdHeaders() {
+export async function getMdHeaders() {
   const token = await getMdToken();
   return token ? { 'Authorization': `Bearer ${token}` } : {};
 }
 
-async function loginMangaDex() {
+export async function loginMangaDex() {
   const clientId     = document.getElementById('md-client-id').value.trim();
   const clientSecret = document.getElementById('md-client-secret').value.trim();
   const username     = document.getElementById('md-username').value.trim();
@@ -113,7 +115,7 @@ async function loginMangaDex() {
   }
 }
 
-function logoutMangaDex() {
+export function logoutMangaDex() {
   _clearMdTokens();
   _setMdStatus(false);
   toast('Logged out of MangaDex.');
@@ -131,7 +133,7 @@ function logoutMangaDex() {
 // another module's binding at all. Moving it here — next to the state it
 // actually owns — fixes that without needing six setters, and puts the restore
 // logic in the file a reader would look in for it.
-function restoreMdAuthFromStorage() {
+export function restoreMdAuthFromStorage() {
   const savedAccess  = localStorage.getItem('mtl_md_access');
   const savedRefresh = localStorage.getItem('mtl_md_refresh');
   const savedExpiry  = parseInt(localStorage.getItem('mtl_md_expiry') || '0', 10);
