@@ -18,7 +18,7 @@
  * Convert a pointer/mouse event position into percentage coordinates
  * relative to `imgEl`'s rendered box, clamped to [0,100].
  */
-function _imgPct(e, imgEl) {
+export function _imgPct(e, imgEl) {
   const r = imgEl.getBoundingClientRect();
   return [
     Math.max(0, Math.min(100, (e.clientX - r.left) / r.width * 100)),
@@ -55,7 +55,7 @@ function _imgPct(e, imgEl) {
  * case a caller wants to force-clear/redraw it, but normally you won't
  * need to call it directly.
  */
-function createBoxOverlay(options) {
+export function createBoxOverlay(options) {
   const {
     getImg,
     getOverlay,
@@ -161,7 +161,7 @@ function createBoxOverlay(options) {
  * onRemove(id): called when a box is clicked
  * extraClass: optional class added to every rendered box div
  */
-function renderRemovableBoxes(overlayEl, boxes, onRemove, extraClass = '') {
+export function renderRemovableBoxes(overlayEl, boxes, onRemove, extraClass = '') {
   if (!overlayEl) return;
   overlayEl.querySelectorAll('.corr-rbox').forEach(el => el.remove());
   boxes.forEach((b, i) => {

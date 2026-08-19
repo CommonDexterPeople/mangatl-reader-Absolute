@@ -7,26 +7,26 @@
 // ══════════════════════════════════════════════
 // STATE
 // ══════════════════════════════════════════════
-let cancelled        = false;
-let abortController  = null;
-let toastTimer       = null;
-let prevChapterId    = null;
-let nextChapterId    = null;
-let _activeChapterId = null;
+export let cancelled        = false;
+export let abortController  = null;
+export let toastTimer       = null;
+export let prevChapterId    = null;
+export let nextChapterId    = null;
+export let _activeChapterId = null;
 
 // ── Badge reading order ────────────────────────
 // 'auto-rtl' = right-to-left then top-to-bottom (manga default)
 // 'auto-ltr' = left-to-right then top-to-bottom (manhwa / webtoon)
 // 'manual'   = keep raw OCR order; per-page drag reorder available
-let _readOrder = localStorage.getItem('mtl_read_order') || 'auto-rtl';
+export let _readOrder = localStorage.getItem('mtl_read_order') || 'auto-rtl';
 
 // Per-page manual order overrides: Map<"chId_pageIdx", number[]> (indices into original regions)
-const _manualOrder = new Map();
+export const _manualOrder = new Map();
 
 // ══════════════════════════════════════════════
 // LANGUAGE NAMES
 // ══════════════════════════════════════════════
-const LANG_NAMES = {
+export const LANG_NAMES = {
   vi: 'Vietnamese', it: 'Italian',    pt: 'Portuguese',
   'pt-br': 'Portuguese (BR)',                           // FIX #7
   ru: 'Russian',    fr: 'French',     es: 'Spanish',   de: 'German',
@@ -38,12 +38,12 @@ const LANG_NAMES = {
   sk: 'Slovak',     bg: 'Bulgarian',  lt: 'Lithuanian', lv: 'Latvian',
   en: 'English',
 };
-function getLangName(code) {
+export function getLangName(code) {
   return LANG_NAMES[code?.toLowerCase()] ?? (code?.toUpperCase() ?? 'Unknown');
 }
 
 // ── Reading order control ─────────────────────
-function setReadOrder(mode) {
+export function setReadOrder(mode) {
   _readOrder = mode;
   localStorage.setItem('mtl_read_order', mode);
   ['auto-rtl', 'auto-ltr', 'manual'].forEach(m => {
@@ -51,7 +51,7 @@ function setReadOrder(mode) {
   });
 }
 
-function _sortRegions(regions) {
+export function _sortRegions(regions) {
   if (_readOrder === 'manual') {
     // manual — keep raw OCR order as returned by server
     return [...regions];
@@ -93,3 +93,25 @@ function _sortRegions(regions) {
   });
 }
 
+
+// ══════════════════════════════════════════════
+// STATE SETTERS
+// ══════════════════════════════════════════════
+// ES modules make imported bindings read-only: `import { cancelled }` gives
+// you a live view of this module's variable, but `cancelled = true` from
+// another module is a hard error ("Cannot assign to import"). Under the old
+// plain-<script> setup every file shared one global scope, so pipeline.js and
+// utils.js just assigned these directly.
+//
+// Reads still work exactly as before — live bindings mean an importer always
+// sees the current value, so only the WRITES needed a door. These are that
+// door. Deliberately one setter per variable rather than a single mutable
+// state object, because that keeps every existing read site (`if (cancelled)`)
+// untouched; a state object would have meant rewriting far more code than the
+// 27 assignments that actually had to change.
+export function setCancelled(v)        { cancelled        = v; }
+export function setAbortController(v)  { abortController  = v; }
+export function setToastTimer(v)       { toastTimer       = v; }
+export function setPrevChapterId(v)    { prevChapterId    = v; }
+export function setNextChapterId(v)    { nextChapterId    = v; }
+export function setActiveChapterId(v)  { _activeChapterId = v; }

@@ -38,10 +38,27 @@
 // a same-day published "15 RPM" doesn't guarantee 15 successful calls in
 // every possible rolling 60s window even if this limiter's math is
 // otherwise correct.
-const GEMINI_RPM_LIMIT = 12;
-let _geminiCallTimestamps = [];  // ms epoch times of recent Gemini-bound calls
+import { refreshCacheUI } from './cache.js';
+import { _corrMode, _corrOverlayCtl, _corrSelId, _corrWork } from './correction-ui.js';
+import { _renderHistoryUI, _stopHistoryTracking, flushHistoryProgress } from './history.js';
+import { clearLocalBlobStore } from './local-source.js';
+import { _pageStore, hideEngineRecBanner, setChapterEngineOverride, setEngineRecShown } from './ocr-client.js';
+import { startPipelineWithId } from './pipeline.js';
+import {
+  _manualOrder,
+  abortController,
+  cancelled,
+  nextChapterId,
+  prevChapterId,
+  setCancelled,
+  setToastTimer,
+  toastTimer,
+} from './state-and-constants.js';
 
-async function waitForGeminiSlot() {
+export const GEMINI_RPM_LIMIT = 12;
+export let _geminiCallTimestamps = [];  // ms epoch times of recent Gemini-bound calls
+
+export async function waitForGeminiSlot() {
   const now = Date.now();
   // Drop timestamps older than the window — they no longer count against the limit.
   _geminiCallTimestamps = _geminiCallTimestamps.filter(t => now - t < 60_000);
@@ -81,7 +98,7 @@ async function waitForGeminiSlot() {
 // passes its own per-run flag instead (see _ocrTranslatePages in
 // pipeline.js for why a shared global would be wrong for a background
 // queue specifically).
-async function runConcurrent(taskFns, limit = 3, isCancelled = () => cancelled) {
+export async function runConcurrent(taskFns, limit = 3, isCancelled = () => cancelled) {
   let nextIdx = 0;
   async function worker() {
     while (nextIdx < taskFns.length && !isCancelled()) {
@@ -95,23 +112,23 @@ async function runConcurrent(taskFns, limit = 3, isCancelled = () => cancelled) 
 // ══════════════════════════════════════════════
 // UI HELPERS
 // ══════════════════════════════════════════════
-function show(id) {
+export function show(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
 }
-function toast(msg, dur = 6000) {
+export function toast(msg, dur = 6000) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.style.display = 'block';
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.style.display = 'none'; }, dur);
+  setToastTimer(setTimeout(() => { t.style.display = 'none'; }, dur));
 }
-function setStatus(msg) { document.getElementById('reader-status').textContent = msg; }
-function setProgress(done, total) {
+export function setStatus(msg) { document.getElementById('reader-status').textContent = msg; }
+export function setProgress(done, total) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   document.getElementById('progress-fill').style.width = pct + '%';
 }
-function esc(s) {
+export function esc(s) {
   // Escapes ' → &#39; too, not just " → &quot; — nothing in this codebase
   // currently interpolates esc() into a single-quoted HTML attribute
   // (grepped for `='${esc(` and found none), but this is defense-in-depth:
@@ -145,7 +162,7 @@ function esc(s) {
 // on an explicit return to the home screen, closes that gap entirely
 // rather than relying on the correction-draft signature check (see
 // _corrSourceSignature in correction-ui.js) to catch it after the fact.
-function _clearChapterState() {
+export function _clearChapterState() {
   _pageStore.clear();
   _manualOrder.clear();
   clearLocalBlobStore();
@@ -160,13 +177,13 @@ function _clearChapterState() {
   // every page). Both deliberately in-memory, not localStorage — this is
   // a per-session override, not a persisted preference; "always use my
   // pick for <lang>" (mtl_local_engine_always) is the persisted one.
-  _chapterEngineOverride = null;
-  _engineRecShown = false;
+  setChapterEngineOverride(null);
+  setEngineRecShown(false);
   hideEngineRecBanner();
 }
 
-function goBack() {
-  cancelled = true;
+export function goBack() {
+  setCancelled(true);
   if (abortController) abortController.abort();
   flushHistoryProgress();  // save final page position before it's gone — see history.js
   _stopHistoryTracking();  // stop watching .page-card elements about to be removed below
@@ -178,7 +195,7 @@ function goBack() {
 }
 
 // ── Chapter navigation ──────────────────────
-function updateNavButtons() {
+export function updateNavButtons() {
   const bar = document.getElementById('nav-bar');
   const p   = document.getElementById('btn-prev');
   const n   = document.getElementById('btn-next');
@@ -189,9 +206,9 @@ function updateNavButtons() {
   n.style.visibility    = nextChapterId ? 'visible' : 'hidden';
   n.style.pointerEvents = nextChapterId ? 'auto'    : 'none';
 }
-function goToPrev() { if (prevChapterId) goToChapter(prevChapterId); }
-function goToNext() { if (nextChapterId) goToChapter(nextChapterId); }
-function goToChapter(chapterId) {
+export function goToPrev() { if (prevChapterId) goToChapter(prevChapterId); }
+export function goToNext() { if (nextChapterId) goToChapter(nextChapterId); }
+export function goToChapter(chapterId) {
   if (!chapterId) return;
   window.scrollTo({ top: 0, behavior: 'instant' });
   document.getElementById('chapter-url').value = `https://mangadex.org/chapter/${chapterId}`;
@@ -209,7 +226,7 @@ function goToChapter(chapterId) {
 // Erase Tool's #erase-ai-inpaint select) wins over the settings-panel
 // default stored in localStorage, so a person actively looking at the
 // toolbar always sees/controls exactly what they're about to send.
-function getAiInpaintSetting() {
+export function getAiInpaintSetting() {
   const toolbarEl = document.getElementById('erase-ai-inpaint');
   if (toolbarEl) return toolbarEl.value === 'on';
   return localStorage.getItem('mtl_ai_inpaint') === 'on';

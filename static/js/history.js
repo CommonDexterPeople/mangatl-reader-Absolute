@@ -31,12 +31,18 @@
 //               See resumeHistoryEntry()'s 'local' branch.
 // ═══════════════════════════════════════════════════════════════
 
-const HIST_PREFIX = 'mtl_hist_';
-const HIST_MAX    = 40;   // proactive entry-count cap, same shape as CACHE_MAX
-const HIST_V      = 1;
+import { triggerLocalCbzPicker, triggerLocalFolderPicker } from './local-source.js';
+import { startPipelineWithId, startPipelineWithSuwayomiSource } from './pipeline.js';
+import { _activeChapterId } from './state-and-constants.js';
+import { chapterFromSuwayomi } from './suwayomi-api.js';
+import { esc, toast } from './utils.js';
+
+export const HIST_PREFIX = 'mtl_hist_';
+export const HIST_MAX    = 40;   // proactive entry-count cap, same shape as CACHE_MAX
+export const HIST_V      = 1;
 
 // ── Storage ───────────────────────────────────────────────────────
-function _listHistoryEntries() {
+export function _listHistoryEntries() {
   const keys = Object.keys(localStorage).filter(k => k.startsWith(HIST_PREFIX));
   const out = [];
   for (const k of keys) {
@@ -50,7 +56,7 @@ function _listHistoryEntries() {
   return out;
 }
 
-function _historyKey(chapterId) { return HIST_PREFIX + chapterId; }
+export function _historyKey(chapterId) { return HIST_PREFIX + chapterId; }
 
 /**
  * Write/update one history entry. Called on chapter start (page 0, so the
@@ -58,7 +64,7 @@ function _historyKey(chapterId) { return HIST_PREFIX + chapterId; }
  * fires — a person who opens a chapter and leaves within a second should
  * still see it in history) and again on every progress update.
  */
-function _saveHistoryEntry(entry) {
+export function _saveHistoryEntry(entry) {
   const key = _historyKey(entry.chapterId);
   const getKeys = () => Object.keys(localStorage).filter(k => k.startsWith(HIST_PREFIX));
   let keys = getKeys();
@@ -89,12 +95,12 @@ function _saveHistoryEntry(entry) {
   }
 }
 
-function removeHistoryEntry(chapterId) {
+export function removeHistoryEntry(chapterId) {
   localStorage.removeItem(_historyKey(chapterId));
   _renderHistoryUI();
 }
 
-function clearAllHistory() {
+export function clearAllHistory() {
   const keys = Object.keys(localStorage).filter(k => k.startsWith(HIST_PREFIX));
   if (!keys.length) return;
   if (!confirm(`Clear all ${keys.length} reading history entries? This can't be undone.`)) return;
@@ -109,9 +115,9 @@ function clearAllHistory() {
 // scroll/progress events fire from page-render.js and paint-brush.js-
 // adjacent code with no `meta` in scope, only whichever chapter is
 // currently open.
-let _activeHistoryEntry = null;   // the entry object currently being kept up to date
-let _historyObserver    = null;
-let _historySaveTimer    = null;
+export let _activeHistoryEntry = null;   // the entry object currently being kept up to date
+export let _historyObserver    = null;
+export let _historySaveTimer    = null;
 
 /**
  * Called once per chapter load from _runChapterPipeline (pipeline.js),
@@ -125,7 +131,7 @@ let _historySaveTimer    = null;
  * startPipelineWithSuwayomiSource is currently running — see this file's
  * header comment for what each kind actually needs.
  */
-function startHistoryTracking({ chapterId, resume, title, chapterLabel, targetLang, pageCount }) {
+export function startHistoryTracking({ chapterId, resume, title, chapterLabel, targetLang, pageCount }) {
   _stopHistoryTracking();  // tear down whatever was watching the previous chapter first
 
   _activeHistoryEntry = {
@@ -156,13 +162,13 @@ function startHistoryTracking({ chapterId, resume, title, chapterLabel, targetLa
   cards.forEach(c => _historyObserver.observe(c));
 }
 
-function _stopHistoryTracking() {
+export function _stopHistoryTracking() {
   if (_historyObserver) { _historyObserver.disconnect(); _historyObserver = null; }
   if (_historySaveTimer) { clearTimeout(_historySaveTimer); _historySaveTimer = null; }
   _activeHistoryEntry = null;
 }
 
-function _onHistoryIntersect(entries) {
+export function _onHistoryIntersect(entries) {
   if (!_activeHistoryEntry) return;
   let best = null, bestRatio = 0;
   for (const e of entries) {
@@ -190,7 +196,7 @@ function _onHistoryIntersect(entries) {
  * flushes the current page position immediately rather than waiting for
  * the debounce timer, so leaving right after a scroll doesn't lose the
  * last few pages of progress. */
-function flushHistoryProgress() {
+export function flushHistoryProgress() {
   if (!_activeHistoryEntry) return;
   if (_historySaveTimer) { clearTimeout(_historySaveTimer); _historySaveTimer = null; }
   _activeHistoryEntry.lastReadAt = Date.now();
@@ -205,7 +211,7 @@ window.addEventListener('beforeunload', flushHistoryProgress);
  * resume.kind and does whatever that source needs; see this file's header
  * comment for the constraints behind each branch, especially 'local'.
  */
-function resumeHistoryEntry(chapterId) {
+export function resumeHistoryEntry(chapterId) {
   const raw = localStorage.getItem(_historyKey(chapterId));
   if (!raw) { toast('That history entry is gone.'); _renderHistoryUI(); return; }
   let entry;
@@ -227,7 +233,7 @@ function resumeHistoryEntry(chapterId) {
  * the other — the two stores are independent, see this file's header for
  * why history isn't just built on top of the cache).
  */
-function _dispatchResume(r, entry) {
+export function _dispatchResume(r, entry) {
   if (r.kind === 'mangadex') {
     startPipelineWithId(r.chapterId, null, entry.targetLang);
   } else if (r.kind === 'suwayomi') {
@@ -251,7 +257,7 @@ function _dispatchResume(r, entry) {
 }
 
 // ── UI: home "Continue Reading" card (single most-recent entry) ────
-function _renderContinueReadingCard() {
+export function _renderContinueReadingCard() {
   const wrap = document.getElementById('continue-reading-card');
   if (!wrap) return;
   const [latest] = _listHistoryEntries();
@@ -274,7 +280,7 @@ function _renderContinueReadingCard() {
 }
 
 // ── UI: home "Recently read" list (a handful of entries, chlist-row styling) ──
-function _renderHistoryLibraryList() {
+export function _renderHistoryLibraryList() {
   const wrap = document.getElementById('home-history-list');
   const header = document.getElementById('home-history-header');
   if (!wrap) return;
@@ -303,7 +309,7 @@ function _renderHistoryLibraryList() {
 }
 
 // ── UI: reader-header "Recent" dropdown ─────────────────────────────
-function toggleRecentDropdown() {
+export function toggleRecentDropdown() {
   const existing = document.getElementById('recent-dropdown');
   if (existing) { existing.remove(); return; }
 
@@ -348,13 +354,13 @@ function toggleRecentDropdown() {
   }, 0);
 }
 
-function _renderHistoryUI() {
+export function _renderHistoryUI() {
   _renderContinueReadingCard();
   _renderHistoryLibraryList();
 }
 
 // ── Small formatting helper ──────────────────────────────────────
-function _fmtRelativeTime(ts) {
+export function _fmtRelativeTime(ts) {
   if (!ts) return '';
   const diffMs = Date.now() - ts;
   const min = Math.floor(diffMs / 60000);

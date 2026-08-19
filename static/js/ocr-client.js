@@ -9,7 +9,12 @@
 // ── Per-page runtime store ─────────────────────────────────────────────────
 // Keyed by `${chapterId}_${pageIdx}`.  Holds cdnUrl, imgSrc, sourceLang,
 // rawBoxes (pre-merge fragments), and autoRegions from the last OCR run.
-const _pageStore = new Map();
+import { recordUsage } from './cost-tracker.js';
+import { imageRefBody } from './local-source.js';
+import { getModelId, getModelInfo } from './translate-client.js';
+import { waitForGeminiSlot } from './utils.js';
+
+export const _pageStore = new Map();
 
 // ── Local OCR engine selection ──────────────────────────────────────────────
 // Three layers, checked in priority order by _resolveLocalEngine():
@@ -23,15 +28,15 @@ const _pageStore = new Map();
 // select's own default option and server.py's /ocr default — a user who's
 // never touched this setting should get identical behavior whether the
 // default lives client-side or server-side.
-let _chapterEngineOverride = null;
-let _engineRecShown = false;
+export let _chapterEngineOverride = null;
+export let _engineRecShown = false;
 
-function _alwaysMap() {
+export function _alwaysMap() {
   try { return JSON.parse(localStorage.getItem('mtl_local_engine_always') || '{}'); }
   catch { return {}; }
 }
 
-function _resolveLocalEngine(lang) {
+export function _resolveLocalEngine(lang) {
   if (_chapterEngineOverride) return _chapterEngineOverride;
   const always = _alwaysMap()[lang];
   if (always) return always;
@@ -40,9 +45,9 @@ function _resolveLocalEngine(lang) {
       || 'easyocr';
 }
 
-const _ENGINE_LABEL = { easyocr: 'EasyOCR', rapidocr: 'RapidOCR' };
+export const _ENGINE_LABEL = { easyocr: 'EasyOCR', rapidocr: 'RapidOCR' };
 
-function hideEngineRecBanner() {
+export function hideEngineRecBanner() {
   const el = document.getElementById('engine-rec-banner');
   if (el) el.style.display = 'none';
 }
@@ -53,7 +58,7 @@ function hideEngineRecBanner() {
 // _LOCAL_ENGINE_RECOMMENDATION) AND the user isn't already on the
 // recommended engine. Deliberately a dismissible banner, not a blocking
 // popup or auto-switch — see ROADMAP.md item 2 for why.
-function maybeShowEngineRecommendation(lang, rec) {
+export function maybeShowEngineRecommendation(lang, rec) {
   if (!rec || _engineRecShown) return;
   _engineRecShown = true;
   const current = _resolveLocalEngine(lang);
@@ -72,8 +77,8 @@ function maybeShowEngineRecommendation(lang, rec) {
   document.getElementById('engine-rec-banner').style.display = 'block';
 }
 
-let _engineRecLang = null, _engineRecTarget = null;
-let _engineRecResolve = null;   // pending waitForEngineRecDecision() resolver, if any
+export let _engineRecLang = null, _engineRecTarget = null;
+export let _engineRecResolve = null;   // pending waitForEngineRecDecision() resolver, if any
 
 // Resolves once the currently-shown banner has been acted on (any of the 3
 // buttons), so a caller can hold off doing real work until the user has
@@ -82,7 +87,7 @@ let _engineRecResolve = null;   // pending waitForEngineRecDecision() resolver, 
 // already on the recommended engine or there's no data for this language.
 // Rejects with AbortError if `signal` fires first (chapter navigated away
 // from / cancelled) so an abandoned wait doesn't hang forever.
-function waitForEngineRecDecision(signal) {
+export function waitForEngineRecDecision(signal) {
   const banner = document.getElementById('engine-rec-banner');
   if (!banner || banner.style.display !== 'block') return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -97,7 +102,7 @@ function waitForEngineRecDecision(signal) {
   });
 }
 
-function _engineRecAction(action) {
+export function _engineRecAction(action) {
   if (action === 'switch') {
     // This chapter only — remaining un-fetched pages will pick this up via
     // _resolveLocalEngine(); already-rendered pages are left as-is rather
@@ -114,7 +119,7 @@ function _engineRecAction(action) {
   if (_engineRecResolve) { _engineRecResolve(); _engineRecResolve = null; }
 }
 
-async function ocrPage(cdnUrl, lang, signal, visionModeOverride) {
+export async function ocrPage(cdnUrl, lang, signal, visionModeOverride) {
   const marginScale = parseFloat(document.getElementById('merge-scale')?.value ?? '0.5');
   const info    = getModelInfo();
   // Pick the Gemini key/model Vision OCR should use, independent of which
@@ -211,3 +216,8 @@ async function ocrPage(cdnUrl, lang, signal, visionModeOverride) {
   };
 }
 
+
+// Write-access for other modules — see the note on setCancelled() in
+// state-and-constants.js for why these exist under ES modules.
+export function setChapterEngineOverride(v) { _chapterEngineOverride = v; }
+export function setEngineRecShown(v)        { _engineRecShown        = v; }

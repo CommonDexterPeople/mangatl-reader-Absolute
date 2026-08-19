@@ -790,30 +790,11 @@
 
 <div id="toast"></div>
 
-<script src="/static/js/state-and-constants.js"></script>
-<script src="/static/js/cache.js"></script>
-<script src="/static/js/utils.js"></script>
-<script src="/static/js/glossary.js"></script>
-<script src="/static/js/history.js"></script>
-<script src="/static/js/cost-tracker.js"></script>
-<script src="/static/js/mangadex-api.js"></script>
-<script src="/static/js/suwayomi-api.js"></script>
-<script src="/static/js/local-source.js"></script>
-<script src="/static/js/ocr-client.js"></script>
-<script src="/static/js/mangadex-auth.js"></script>
-<script src="/static/js/translate-client.js"></script>
-<script src="/static/js/page-render.js"></script>
-<script src="/static/js/pipeline.js"></script>
-<script src="/static/js/reorder-ui.js"></script>
-<script src="/static/js/box-overlay.js"></script>
-<script src="/static/js/correction-ui.js"></script>
-<script src="/static/js/zip-writer.js"></script>
-<script src="/static/js/export.js"></script>
-<script src="/static/js/downloads.js"></script>
-<script src="/static/js/queue.js"></script>
-<script src="/static/js/paint-brush.js"></script>
-<script src="/static/js/erase-tool.js"></script>
-<script src="/static/js/trans-rail.js"></script>
+<!-- One entry point. Every file under static/js/ is an ES module now, so
+     dependencies are declared in each module's own imports rather than by
+     the order of <script> tags here. See main.js for the bootstrap and for
+     the window bridge that keeps the inline onclick= handlers below working. -->
+<script type="module" src="/static/js/main.js"></script>
 </body>
 </html>
 

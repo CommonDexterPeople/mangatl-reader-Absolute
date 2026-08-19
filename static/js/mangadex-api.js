@@ -7,12 +7,14 @@
 // ══════════════════════════════════════════════
 // MANGADEX API  (routed via local proxy)
 // ══════════════════════════════════════════════
-function parseChapterId(url) {
+import { getMdHeaders } from './mangadex-auth.js';
+
+export function parseChapterId(url) {
   const m = url.match(/chapter\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
   return m ? m[1] : null;
 }
 
-async function fetchChapterMeta(id, signal) {
+export async function fetchChapterMeta(id, signal) {
   const authHeaders = await getMdHeaders();
   const r = await fetch(`/mangadex/chapter/${id}?includes[]=manga&includes[]=scanlation_group`, { signal, headers: authHeaders });
   if (!r.ok) {
@@ -43,7 +45,7 @@ async function fetchChapterMeta(id, signal) {
 // FIX #12: returns {cdn, img} pairs instead of plain strings.
 //   cdn  — raw CDN HTTPS URL, used by /ocr (must be HTTPS for the proxy to accept)
 //   img  — routed through /proxy so all image traffic goes through the local server
-async function fetchPageUrls(id, quality, signal) {
+export async function fetchPageUrls(id, quality, signal) {
   const authHeaders = await getMdHeaders();
   const r = await fetch(`/mangadex/at-home/server/${id}`, { signal, headers: authHeaders });
   if (!r.ok) throw new Error(`Failed to get page server: ${r.status}`);
@@ -70,10 +72,10 @@ async function fetchPageUrls(id, quality, signal) {
 //   just to answer an O(1) "what's next" question, every single navigation.
 //   A short in-session TTL keeps it from ever going too stale if a new
 //   chapter is uploaded mid-session.
-const _FEED_CACHE_TTL = 5 * 60 * 1000;  // 5 minutes — long enough to cover a reading session
-const _feedCache = new Map();  // key: `${mangaId}_${lang}` -> { chapters, timestamp }
+export const _FEED_CACHE_TTL = 5 * 60 * 1000;  // 5 minutes — long enough to cover a reading session
+export const _feedCache = new Map();  // key: `${mangaId}_${lang}` -> { chapters, timestamp }
 
-async function _getMangaFeed(mangaId, lang, signal) {
+export async function _getMangaFeed(mangaId, lang, signal) {
   const cacheKey = `${mangaId}_${lang}`;
   const cached   = _feedCache.get(cacheKey);
   if (cached && (Date.now() - cached.timestamp) < _FEED_CACHE_TTL) {
@@ -101,7 +103,7 @@ async function _getMangaFeed(mangaId, lang, signal) {
   return all;
 }
 
-async function fetchAdjacentChapters(mangaId, currentId, lang, signal) {
+export async function fetchAdjacentChapters(mangaId, currentId, lang, signal) {
   try {
     const all = await _getMangaFeed(mangaId, lang, signal);
     const idx = all.findIndex(ch => ch.id === currentId);

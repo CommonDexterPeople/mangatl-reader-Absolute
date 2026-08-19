@@ -127,15 +127,63 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 ```
 .
 ├── server.py           Flask backend — routes, OCR pipeline, translation providers
+├── mtl/                Modules split out of server.py
+│   ├── config.py          Constants shared by server.py and the modules below
+│   ├── security.py        SSRF allowlist, image-body loading, exposure guard
+│   └── inpaint.py         Text erasure: LaMa, OpenCV inpainting, flat fill, smudge pass
 ├── static/
 │   ├── index.html         Page markup only
 │   ├── style.css          All styling
-│   └── js/                One module per concern: chapter pipeline, correction UI,
-│                           export, local-source handling, MangaDex auth, etc.
+│   └── js/                ES modules, one per concern: chapter pipeline,
+│                           correction UI, export, MangaDex auth, etc.
+│                           main.js is the entry point; chapter-source.js
+│                           defines the Chapter shape every source produces.
 └── build.py             Reassembles everything into one distributable .py file
 ```
 
-Load order matters in `static/js/` — these are plain `<script>` tags sharing one global scope, not ES modules, so a new module's `<script>` tag needs to go into `index.html` after whatever it depends on.
+`mtl/` exists because `server.py` had grown to ~6,100 lines with the first route
+around line 4,600. The modules there are ordinary imports, so the tests import and
+call the real functions rather than scraping source text. `build.py` **inlines**
+them into the single-file build rather than importing them — so a module in `mtl/`
+may import from an earlier one in `config → security → inpaint` order, but never
+from `server.py` itself, and CI checks the built file has no `mtl` imports left.
+
+`static/js/` is ES modules. Each file declares what it imports, so load order is
+no longer something you maintain by hand — `index.html` loads exactly one entry
+point (`main.js`) and a new module just needs importing wherever it's used.
+
+`main.js` also holds the **global bridge**: `index.html` and a lot of
+JS-generated markup call functions straight from inline `onclick="…"`
+attributes, which resolve against the global scope at click time. Module scope
+isn't global, so `main.js` re-publishes every module's exports onto `window` —
+about 100 of the ~440 top-level names are reachable that way. It's a
+compatibility shim, not the target state: convert inline handlers to
+`addEventListener` or event delegation, then drop modules from that list as
+nothing in the markup calls into them.
+
+**Adding a chapter source** (a fourth alongside MangaDex, Suwayomi, and local
+folder/CBZ) means writing one loader in `chapter-source.js` that returns a
+`Chapter`, then registering it on each screen. It used to mean writing it twice —
+once for the reader and once, near-identically, for the Erase Tool. The `Chapter`
+shape is documented at the top of `chapter-source.js`; note `cacheable`, which is
+what encodes "local pages don't survive a reload" as data rather than prose.
+
+Three consequences worth knowing before editing `static/js/`:
+
+- **You can't assign to another module's binding.** Imports are read-only. Shared
+  mutable state goes through setters (`setCancelled()` in
+  `state-and-constants.js`), and behaviour is added to another module's function
+  by subscribing to a hook it exposes (`onAfterPageRender()` in `page-render.js`),
+  never by reassigning it.
+- **Prefer `export function` over `export const fn = …`.** Both work under ES
+  modules, but the single-file build flattens everything into one classic script,
+  where a top-level `const` is a lexical global (reachable from inline handlers,
+  but not a `window` property) while a function declaration is both. Declarations
+  keep `window.X` resolving identically in either build.
+- **Top-level names must stay unique across all of `static/js/`.** Modules
+  themselves don't require that, but `build.py` flattens them into one scope for
+  the single-file build, where a collision is a redeclaration. The build fails
+  loudly if two modules export the same name.
 
 Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly what gets attached to a GitHub Release for the "just double-click it" crowd. Don't hand-edit the built file: fixes belong in `server.py`/`static/`, then re-run the build.
 
@@ -144,7 +192,7 @@ Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly wh
 ## Known limitations
 
 - Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
-- `test_ssrf_guard.py` and `test_deepseek_rescue.py` cover the SSRF allowlist and the DeepSeek JSON-rescue heuristic; there's no broader test suite beyond those two yet. Both run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS file and a `build.py` smoke test.
+- Five test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, and three bubble-segmentation cases; there's no broader suite beyond those yet, and the bubble tests are synthetic geometry rather than real pages. All five run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
 
 ---
 

@@ -32,11 +32,14 @@
 //   page's first/last row at the ends.
 // ═══════════════════════════════════════════════════════════════
 
-const _TRAIL_COLLAPSE_KEY = 'mtl_trail_collapsed';
-let _railDockedPage  = null;  // pageIdx currently shown in the sidebar, or null
-let _railCollapsed   = localStorage.getItem(_TRAIL_COLLAPSE_KEY) === '1';
-let _railIO          = null;  // IntersectionObserver tracking which page-card is in view
-let _railSourceMO    = null;  // MutationObserver watching the currently-docked page's real .trans-panel
+import { onAfterCorrectionClose, onAfterCorrectionOpen, onBeforeCorrectionOpen } from './correction-ui.js';
+import { onAfterPageRender } from './page-render.js';
+
+export const _TRAIL_COLLAPSE_KEY = 'mtl_trail_collapsed';
+export let _railDockedPage  = null;  // pageIdx currently shown in the sidebar, or null
+export let _railCollapsed   = localStorage.getItem(_TRAIL_COLLAPSE_KEY) === '1';
+export let _railIO          = null;  // IntersectionObserver tracking which page-card is in view
+export let _railSourceMO    = null;  // MutationObserver watching the currently-docked page's real .trans-panel
 
 // ══════════════════════════════════════════════
 // Wrap the render functions once, so a fresh render always re-checks
@@ -44,50 +47,29 @@ let _railSourceMO    = null;  // MutationObserver watching the currently-docked 
 // top of the MutationObserver below, and it's what handles the very
 // first render (before anything exists for the observer to watch).
 // ══════════════════════════════════════════════
-(function _wrapRenderers() {
-  const _origRenderPage        = renderPage;
-  const _origRenderPageDisplay = renderPageDisplay;
-  const _origRenderPageError   = renderPageError;
+// Re-sync the docked panel after any (re-)render, and around correction
+// open/close. These used to be two IIFEs that reassigned page-render.js's and
+// correction-ui.js's functions at load time; those modules now expose hooks
+// instead (see onAfterPageRender / onBeforeCorrectionOpen there), because an
+// ES module can't write to another module's binding. Same three call points,
+// same order, just subscribed rather than monkey-patched.
+onAfterPageRender(_transRailOnPageRendered);
 
-  renderPage = function (el, pageIdx, total, imgSrc, regions) {
-    _origRenderPage(el, pageIdx, total, imgSrc, regions);
-    _transRailOnPageRendered(pageIdx);
-  };
-  renderPageDisplay = function (el, pageIdx, total, imgSrc) {
-    _origRenderPageDisplay(el, pageIdx, total, imgSrc);
-    _transRailOnPageRendered(pageIdx);
-  };
-  renderPageError = function (el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang) {
-    _origRenderPageError(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang);
-    _transRailOnPageRendered(pageIdx);
-  };
-})();
-
-// Also wrap openCorrection/closeCorrection: while a page is being
-// corrected, its #trans-panel-<N> is temporarily gone (correction-ui
-// replaces the whole card's innerHTML), so the sidebar should show a
-// neutral note instead of a blank/stale panel while that's open.
-(function _wrapCorrection() {
-  const _origOpen  = openCorrection;
-  const _origClose = closeCorrection;
-  openCorrection = function (pageIdx) {
-    // Stop watching this page's card BEFORE it gets replaced — the
-    // MutationObserver fires asynchronously, which would otherwise
-    // land after _renderCorrectingNote() below and overwrite it with
-    // a generic "Translating…" resync triggered by the card's old
-    // .trans-panel being destroyed.
-    if (_railDockedPage === pageIdx && _railSourceMO) _railSourceMO.disconnect();
-    _origOpen(pageIdx);
-    if (_railDockedPage === pageIdx) _renderCorrectingNote();
-  };
-  closeCorrection = function (pageIdx) {
-    _origClose(pageIdx);
-    _transRailOnPageRendered(pageIdx);
-  };
-})();
+onBeforeCorrectionOpen(pageIdx => {
+  // Stop watching this page's card BEFORE it gets replaced — the
+  // MutationObserver fires asynchronously, which would otherwise
+  // land after _renderCorrectingNote() below and overwrite it with
+  // a generic "Translating…" resync triggered by the card's old
+  // .trans-panel being destroyed.
+  if (_railDockedPage === pageIdx && _railSourceMO) _railSourceMO.disconnect();
+});
+onAfterCorrectionOpen(pageIdx => {
+  if (_railDockedPage === pageIdx) _renderCorrectingNote();
+});
+onAfterCorrectionClose(_transRailOnPageRendered);
 
 // Called after ANY (re-)render of a page's translation panel.
-function _transRailOnPageRendered(pageIdx) {
+export function _transRailOnPageRendered(pageIdx) {
   _refreshFabCount();
   if (_railDockedPage === pageIdx) {
     _syncFromSource();
@@ -111,7 +93,7 @@ function _transRailOnPageRendered(pageIdx) {
 // page-render.js / correction-ui.js / reorder-ui.js keep working on
 // it exactly as before.
 // ══════════════════════════════════════════════
-function _dockPage(pageIdx) {
+export function _dockPage(pageIdx) {
   const body = document.getElementById('trans-rail-body');
   if (!body) return;
 
@@ -129,7 +111,7 @@ function _dockPage(pageIdx) {
 // This is the only place that writes trans-rail-body's content, and
 // it always reads the live DOM — so it can never show something
 // stale relative to whatever renderPage()/reorder-ui.js last wrote.
-function _syncFromSource() {
+export function _syncFromSource() {
   const body = document.getElementById('trans-rail-body');
   if (!body || _railDockedPage == null) return;
 
@@ -166,13 +148,13 @@ function _syncFromSource() {
   }
 }
 
-function _renderCorrectingNote() {
+export function _renderCorrectingNote() {
   const body = document.getElementById('trans-rail-body');
   if (!body) return;
   body.innerHTML = `<div class="trans-rail-empty">Editing this page in ✏ CORRECT…</div>`;
 }
 
-function _renderNoPageDocked() {
+export function _renderNoPageDocked() {
   const body = document.getElementById('trans-rail-body');
   if (!body) return;
   body.innerHTML = `<div class="trans-rail-empty">Scroll to a translated page.</div>`;
@@ -185,7 +167,7 @@ function _renderNoPageDocked() {
 // it happens — this is what actually fixes the sidebar/in-page
 // mismatch, rather than relying on this file remembering every call
 // site that could change it.
-function _watchDockedSource() {
+export function _watchDockedSource() {
   if (_railSourceMO) _railSourceMO.disconnect();
   const card = document.getElementById(`page-${_railDockedPage}`);
   if (!card) return;
@@ -198,13 +180,13 @@ function _watchDockedSource() {
   _railSourceMO.observe(card, { childList: true, subtree: true, characterData: true });
 }
 
-function _refreshFabCount() {
+export function _refreshFabCount() {
   if (_railDockedPage == null) return;
   const card = document.getElementById(`page-${_railDockedPage}`);
   const rows = card?.querySelectorAll('.trans-panel .t-row').length || 0;
   _updateFabCount(rows);
 }
-function _updateFabCount(n) {
+export function _updateFabCount(n) {
   const el = document.getElementById('trans-fab-count');
   if (el) el.textContent = String(n);
 }
@@ -220,7 +202,7 @@ function _updateFabCount(n) {
 // Once past the last page, the sidebar stays docked to that last
 // page rather than clearing — it never auto-hides.
 // ══════════════════════════════════════════════
-function _initScrollTracking() {
+export function _initScrollTracking() {
   if (_railIO) _railIO.disconnect();
 
   const ANCHOR_FRACTION = 0.25; // 25% down from the top of the viewport
@@ -255,7 +237,7 @@ function _initScrollTracking() {
 // id="page-<i>" but no data-page attribute — patch that in once
 // per chapter load, right after the skeletons go up, so the
 // IntersectionObserver above can read dataset.page.
-function _tagPageCards() {
+export function _tagPageCards() {
   document.querySelectorAll('#pages-container .page-card').forEach(card => {
     if (card.dataset.page !== undefined) return;
     const m = card.id.match(/^page-(\d+)$/);
@@ -267,7 +249,7 @@ function _tagPageCards() {
 // chapter. pipeline.js clears #pages-container synchronously before
 // appending skeletons, so a MutationObserver catches every load,
 // local-folder/CBZ included, without needing a hook in pipeline.js.
-const _pagesContainerWatcher = new MutationObserver(() => {
+export const _pagesContainerWatcher = new MutationObserver(() => {
   _tagPageCards();
   _initScrollTracking();
   const dockedCardGone = _railDockedPage != null && !document.getElementById(`page-${_railDockedPage}`);
@@ -281,12 +263,12 @@ const _pagesContainerWatcher = new MutationObserver(() => {
 // ══════════════════════════════════════════════
 // TWO-WAY BADGE <-> ROW BINDING
 // ══════════════════════════════════════════════
-function _clearRowActive() {
+export function _clearRowActive() {
   document.querySelectorAll('.t-row.row-active').forEach(r => r.classList.remove('row-active'));
   document.querySelectorAll('.badge.badge-active').forEach(b => b.classList.remove('badge-active'));
 }
 
-function _activateRow(pageIdx, ridx, { scrollRow = true, scrollBadge = false, flash = false } = {}) {
+export function _activateRow(pageIdx, ridx, { scrollRow = true, scrollBadge = false, flash = false } = {}) {
   if (_railDockedPage !== pageIdx) _dockPage(pageIdx);
   _clearRowActive();
 
@@ -336,7 +318,7 @@ document.addEventListener('keydown', e => {
 });
 
 // Row click → highlight + scroll to its badge on the image.
-function _bindRowClicks(container) {
+export function _bindRowClicks(container) {
   if (!container) return;
   container.addEventListener('click', e => {
     const row = e.target.closest?.('.t-row');
@@ -354,19 +336,19 @@ function _bindRowClicks(container) {
 // person is typing in any input/textarea/select, or while a page
 // is open in ✏ CORRECT (which has its own key handling).
 // ══════════════════════════════════════════════
-function _isTypingTarget(el) {
+export function _isTypingTarget(el) {
   if (!el) return false;
   const tag = el.tagName;
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
 }
 
-function _currentRowIndex() {
+export function _currentRowIndex() {
   const active = document.querySelector('.t-row.row-active');
   if (!active) return -1;
   return +active.dataset.ridx;
 }
 
-function _rowsForPage(pageIdx) {
+export function _rowsForPage(pageIdx) {
   const card = document.getElementById(`page-${pageIdx}`);
   return card ? card.querySelectorAll('.badge').length : 0;
 }
@@ -375,7 +357,7 @@ function _rowsForPage(pageIdx) {
 // the async IntersectionObserver. Used as a keyboard-nav-only
 // fallback so a fast scroll immediately followed by a keypress
 // doesn't act on a page the observer hasn't caught up to yet.
-function _mostVisiblePageNow() {
+export function _mostVisiblePageNow() {
   const vh = window.innerHeight;
   let best = null, bestVisible = -1;
   document.querySelectorAll('.page-card').forEach(card => {
@@ -386,7 +368,7 @@ function _mostVisiblePageNow() {
   return best ? +best.dataset.page : null;
 }
 
-function _stepLine(dir) {
+export function _stepLine(dir) {
   // dir: +1 = next line, -1 = prev line
   if (document.getElementById('screen-reader')?.classList.contains('active') !== true) return;
   if (document.querySelector('.page-card.correcting')) return; // correction UI owns keys while open
@@ -426,7 +408,7 @@ function _stepLine(dir) {
   _activateRow(pageIdx, next, { scrollRow: true, scrollBadge: true });
 }
 
-function _rollToPage(targetIdx, dir) {
+export function _rollToPage(targetIdx, dir) {
   const card = document.getElementById(`page-${targetIdx}`);
   if (!card) return; // start/end of chapter — nothing further to roll to
   card.scrollIntoView({ block: dir > 0 ? 'start' : 'end', behavior: 'smooth' });
@@ -449,7 +431,7 @@ document.addEventListener('keydown', e => {
 // sidebar's visibility ever changes; no auto-show/auto-hide tied to
 // scroll position or screen width.
 // ══════════════════════════════════════════════
-function _applyCollapsedState() {
+export function _applyCollapsedState() {
   const rail = document.getElementById('trans-rail');
   const fab  = document.getElementById('trans-fab');
   if (!rail || !fab) return;
@@ -457,12 +439,12 @@ function _applyCollapsedState() {
   fab.hidden  = !_railCollapsed;
   if (!_railCollapsed && _railDockedPage != null) _syncFromSource();
 }
-function transRailCollapse() {
+export function transRailCollapse() {
   _railCollapsed = true;
   localStorage.setItem(_TRAIL_COLLAPSE_KEY, '1');
   _applyCollapsedState();
 }
-function transRailExpand() {
+export function transRailExpand() {
   _railCollapsed = false;
   localStorage.setItem(_TRAIL_COLLAPSE_KEY, '0');
   _applyCollapsedState();

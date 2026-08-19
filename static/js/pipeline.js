@@ -12,7 +12,45 @@
 // in local-source.js — same key, same provider, same validation either way.
 // Returns the trimmed key on success (and saves it), or null after already
 // showing the person a toast explaining why.
-function _validateApiKeyOrToast() {
+import { getCachedChapter, getEffectivePageRegions, refreshCacheUI, setCachedChapter } from './cache.js';
+import { resetChapterCost } from './cost-tracker.js';
+import { setActiveGlossary } from './glossary.js';
+import { startHistoryTracking } from './history.js';
+import { fetchAdjacentChapters, fetchChapterMeta, fetchPageUrls, parseChapterId } from './mangadex-api.js';
+import {
+  _ENGINE_LABEL,
+  _pageStore,
+  _resolveLocalEngine,
+  maybeShowEngineRecommendation,
+  ocrPage,
+  waitForEngineRecDecision,
+} from './ocr-client.js';
+import { addSkeleton, renderPage, renderPageDisplay, renderPageError } from './page-render.js';
+import {
+  _activeChapterId,
+  _sortRegions,
+  abortController,
+  cancelled,
+  getLangName,
+  setAbortController,
+  setActiveChapterId,
+  setCancelled,
+  setNextChapterId,
+  setPrevChapterId,
+} from './state-and-constants.js';
+import { makeSuwayomiSourceUI } from './chapter-source.js';
+import { getModelInfo, getTargetLang, translateBatch } from './translate-client.js';
+import {
+  _clearChapterState,
+  runConcurrent,
+  setProgress,
+  setStatus,
+  show,
+  toast,
+  updateNavButtons,
+} from './utils.js';
+
+export function _validateApiKeyOrToast() {
   const key  = document.getElementById('ai-key').value.trim();
   const info = getModelInfo();
 
@@ -43,7 +81,7 @@ function _validateApiKeyOrToast() {
   return key;
 }
 
-async function startPipeline() {
+export async function startPipeline() {
   const rawUrl     = document.getElementById('chapter-url').value.trim();
   const targetLang = getTargetLang();
   const quality    = document.getElementById('quality').value;
@@ -59,18 +97,18 @@ async function startPipeline() {
   startPipelineWithId(chapterId, quality, targetLang);
 }
 
-async function startPipelineWithId(chapterId, quality, targetLang) {
+export async function startPipelineWithId(chapterId, quality, targetLang) {
   quality    = quality    || document.getElementById('quality').value;
   targetLang = targetLang || getTargetLang();
 
-  cancelled = false;
+  setCancelled(false);
   if (abortController) abortController.abort();
-  abortController = new AbortController();
+  setAbortController(new AbortController());
   const signal = abortController.signal;
 
-  _activeChapterId = chapterId;
-  prevChapterId    = null;
-  nextChapterId    = null;
+  setActiveChapterId(chapterId);
+  setPrevChapterId(null);
+  setNextChapterId(null);
   // Release any leftover state from a PREVIOUS chapter before this one
   // starts writing into _pageStore/_manualOrder/etc. — see
   // _clearChapterState's docstring in utils.js for why this must run
@@ -125,7 +163,7 @@ async function startPipelineWithId(chapterId, quality, targetLang) {
       fetchAdjacentChapters(meta.mangaId, chapterId, sourceLang, signal)
         .then(({ prev, next }) => {
           if (_activeChapterId !== startedId || cancelled) return;
-          prevChapterId = prev; nextChapterId = next;
+          setPrevChapterId(prev); setNextChapterId(next);
           updateNavButtons();
         });
     }
@@ -184,7 +222,7 @@ async function startPipelineWithId(chapterId, quality, targetLang) {
  * both callers can hand this straight to the cache write with no
  * reshaping.
  */
-async function _ocrTranslatePages(urls, sourceLang, targetLang, signal, opts = {}) {
+export async function _ocrTranslatePages(urls, sourceLang, targetLang, signal, opts = {}) {
   const {
     onPageDone = null,      // (i, regions, {ocrData, sortedOcr}) => void — called once per successful page
     onPageError = null,     // (i, err) => void
@@ -309,7 +347,7 @@ async function _ocrTranslatePages(urls, sourceLang, targetLang, signal, opts = {
  * history.js's startHistoryTracking() — see that function's own doc
  * comment for what each source needs to be resumable later.
  */
-async function _runChapterPipeline({ chapterId, urls, meta, sourceLang, targetLang,
+export async function _runChapterPipeline({ chapterId, urls, meta, sourceLang, targetLang,
                                       signal, resolveAdjacentChapters, cacheable = true,
                                       resume = null }) {
   const isEnglish = sourceLang === 'en';
@@ -482,13 +520,13 @@ async function _runChapterPipeline({ chapterId, urls, meta, sourceLang, targetLa
  * is mostly just the MangaDex-specific setup (chapter meta, adjacent-chapter
  * lookup) stripped out, feeding the same _runChapterPipeline() above.
  */
-async function startPipelineWithLocalSource(localChapter, targetLang) {
+export async function startPipelineWithLocalSource(localChapter, targetLang) {
   targetLang = targetLang || getTargetLang();
   if (!_validateApiKeyOrToast()) return;
 
-  cancelled = false;
+  setCancelled(false);
   if (abortController) abortController.abort();
-  abortController = new AbortController();
+  setAbortController(new AbortController());
   const signal = abortController.signal;
 
   const chapterId  = localChapter.id;
@@ -496,9 +534,9 @@ async function startPipelineWithLocalSource(localChapter, targetLang) {
   const isEnglish  = sourceLang === 'en';
   const total      = localChapter.pages.length;
 
-  _activeChapterId = chapterId;
-  prevChapterId    = null;   // no prev/next chapter for a local source —
-  nextChapterId    = null;   // updateNavButtons() below hides the nav bar
+  setActiveChapterId(chapterId);
+  setPrevChapterId(null);   // no prev/next chapter for a local source —
+  setNextChapterId(null);   // updateNavButtons() below hides the nav bar
   // Release any leftover state from a PREVIOUS chapter — see
   // _clearChapterState's docstring in utils.js.
   _clearChapterState();
@@ -554,13 +592,13 @@ async function startPipelineWithLocalSource(localChapter, targetLang) {
  * chapter's CDN URLs are. No reason to make someone re-OCR/re-translate a
  * chapter they already did just because it came from Suwayomi instead.
  */
-async function startPipelineWithSuwayomiSource(chapter, targetLang) {
+export async function startPipelineWithSuwayomiSource(chapter, targetLang) {
   targetLang = targetLang || getTargetLang();
   if (!_validateApiKeyOrToast()) return;
 
-  cancelled = false;
+  setCancelled(false);
   if (abortController) abortController.abort();
-  abortController = new AbortController();
+  setAbortController(new AbortController());
   const signal = abortController.signal;
 
   const chapterId  = chapter.id;
@@ -568,9 +606,9 @@ async function startPipelineWithSuwayomiSource(chapter, targetLang) {
   const isEnglish  = sourceLang === 'en';
   const total      = chapter.pages.length;
 
-  _activeChapterId = chapterId;
-  prevChapterId    = null;   // no adjacent-chapter feed for Suwayomi yet —
-  nextChapterId    = null;   // updateNavButtons() below hides the nav bar
+  setActiveChapterId(chapterId);
+  setPrevChapterId(null);   // no adjacent-chapter feed for Suwayomi yet —
+  setNextChapterId(null);   // updateNavButtons() below hides the nav bar
   // Release any leftover state from a PREVIOUS chapter — see
   // _clearChapterState's docstring in utils.js.
   _clearChapterState();
@@ -625,26 +663,22 @@ async function startPipelineWithSuwayomiSource(chapter, targetLang) {
 // (chapterFromSuwayomi() itself lives in suwayomi-api.js, matching that
 // file's scope: fetch + normalize only, same as mangadex-api.js — no
 // UI-triggering handlers there, same split this codebase already uses.)
-function toggleSuwayomiSource() {
-  document.getElementById('suwayomi-source-wrap')?.classList.toggle('open');
-}
+// ── Reader Suwayomi controls ─────────────────────────────────────────────────
+// Behaviour lives in makeSuwayomiSourceUI() (chapter-source.js); this screen
+// supplies the id prefix and the destination. See the matching registration in
+// erase-tool.js.
+const _readerSuwayomiSource = makeSuwayomiSourceUI({
+  idPrefix: '',
+  guard:    _validateApiKeyOrToast,
+  onChapter: (chapter) => startPipelineWithSuwayomiSource(chapter),
+});
 
-async function loadFromSuwayomi() {
-  const mangaId      = document.getElementById('suwayomi-manga-id').value.trim();
-  const chapterIndex = document.getElementById('suwayomi-chapter-index').value.trim();
-  const sourceLang   = document.getElementById('suwayomi-source-lang').value;
-
-  if (!mangaId || !chapterIndex) {
-    toast('Enter both a Manga ID and a Chapter Index.');
-    return;
-  }
-
-  toast('Fetching from Suwayomi…', 3000);
-  try {
-    const chapter = await chapterFromSuwayomi(mangaId, chapterIndex, sourceLang);
-    startPipelineWithSuwayomiSource(chapter);
-  } catch (e) {
-    toast(e.message);
-  }
-}
+// Exported as function declarations, not `export const x = ui.toggle`. Both work
+// under ES modules, but build.py flattens the frontend into one classic script
+// for the single-file build, where a top-level `const` becomes a lexical global
+// (reachable from inline handlers, but NOT a window property) while a function
+// declaration becomes both. Keeping these as declarations means window.X
+// resolves identically in the split build and the flattened one.
+export function toggleSuwayomiSource() { return _readerSuwayomiSource.toggle(); }
+export function loadFromSuwayomi()     { return _readerSuwayomiSource.load(); }
 

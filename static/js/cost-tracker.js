@@ -21,10 +21,12 @@
 
 // ── Rate table loading ────────────────────────────────────────────
 
-let _ratesCache   = null;   // parsed rates.json, or null if unavailable
-let _ratesPromise = null;   // in-flight fetch, so concurrent callers share one request
+import { esc, toast } from './utils.js';
 
-async function _loadRates() {
+export let _ratesCache   = null;   // parsed rates.json, or null if unavailable
+export let _ratesPromise = null;   // in-flight fetch, so concurrent callers share one request
+
+export async function _loadRates() {
   if (_ratesCache) return _ratesCache;
   if (_ratesPromise) return _ratesPromise;
   _ratesPromise = (async () => {
@@ -44,14 +46,14 @@ async function _loadRates() {
 // Session-only rate overrides (Cost Settings modal). Kept separate from
 // _ratesCache so "reset to defaults" is just "clear this object" rather
 // than needing to re-fetch rates.json.
-function _getRateOverrides() {
+export function _getRateOverrides() {
   try {
     const raw = localStorage.getItem('mtl-cost-rate-overrides');
     return raw ? JSON.parse(raw) : {};
   } catch { return {}; }
 }
 
-function _setRateOverride(provider, model, field, value) {
+export function _setRateOverride(provider, model, field, value) {
   const overrides = _getRateOverrides();
   overrides[provider] ??= {};
   overrides[provider][model] ??= {};
@@ -59,14 +61,14 @@ function _setRateOverride(provider, model, field, value) {
   localStorage.setItem('mtl-cost-rate-overrides', JSON.stringify(overrides));
 }
 
-function _clearRateOverrides() {
+export function _clearRateOverrides() {
   localStorage.removeItem('mtl-cost-rate-overrides');
 }
 
 // Merges rates.json's entry for a model with any session override,
 // override fields winning field-by-field (so overriding just "output"
 // doesn't blow away "input").
-function _effectiveRate(provider, model) {
+export function _effectiveRate(provider, model) {
   const base      = _ratesCache?.[provider]?.[model];
   const overrides = _getRateOverrides()?.[provider]?.[model];
   if (!base && !overrides) return null;
@@ -90,7 +92,7 @@ function _effectiveRate(provider, model) {
  *   exact=false means no rate entry was found and cost is 0 — caller
  *   should fall back to _estimateCost() instead of trusting this.
  */
-function _tokenCost(usage, provider, model) {
+export function _tokenCost(usage, provider, model) {
   const rate = _effectiveRate(provider, model);
   if (!rate) return { cost: 0, exact: false, breakdown: '' };
 
@@ -139,7 +141,7 @@ function _tokenCost(usage, provider, model) {
  * Returns: same {cost, exact, breakdown} shape as _tokenCost(), so
  *   recordUsage() can treat both the same way downstream.
  */
-function _deepLCost(charCount) {
+export function _deepLCost(charCount) {
   const rate = _effectiveRate('deepl', 'deepl');
   if (!rate) return { cost: 0, exact: false, breakdown: '' };
   const cost = (charCount / 1_000_000) * rate.per_million_chars;
@@ -162,7 +164,7 @@ function _deepLCost(charCount) {
  * Deliberately conservative/rough — labelled "~estimate" in the UI, never
  * shown as if it were an exact figure.
  */
-function _estimateCost(charCount, imageCount, provider) {
+export function _estimateCost(charCount, imageCount, provider) {
   // Very rough blended $/1K-characters figures based on this app's own
   // cheapest current models (DeepSeek V4 Flash / Gemini 3.1 Flash-Lite) —
   // deliberately on the low side so the estimate undersells rather than
@@ -177,38 +179,38 @@ function _estimateCost(charCount, imageCount, provider) {
 // this feature is measuring, and consistent with this being a
 // single-browser personal tool rather than needing server-side accounts.
 
-const _LIFETIME_KEY  = 'mtl-cost-lifetime';
-const _CHAPTER_KEY   = 'mtl-cost-current-chapter';
+export const _LIFETIME_KEY  = 'mtl-cost-lifetime';
+export const _CHAPTER_KEY   = 'mtl-cost-current-chapter';
 
-function _readLifetime() {
+export function _readLifetime() {
   try {
     const raw = localStorage.getItem(_LIFETIME_KEY);
     return raw ? JSON.parse(raw) : { total: 0, byModel: {}, since: Date.now() };
   } catch { return { total: 0, byModel: {}, since: Date.now() }; }
 }
 
-function _writeLifetime(state) {
+export function _writeLifetime(state) {
   try { localStorage.setItem(_LIFETIME_KEY, JSON.stringify(state)); } catch {}
 }
 
-function _readChapterTotal() {
+export function _readChapterTotal() {
   try {
     const raw = localStorage.getItem(_CHAPTER_KEY);
     return raw ? JSON.parse(raw) : { total: 0, calls: [] };
   } catch { return { total: 0, calls: [] }; }
 }
 
-function _writeChapterTotal(state) {
+export function _writeChapterTotal(state) {
   try { localStorage.setItem(_CHAPTER_KEY, JSON.stringify(state)); } catch {}
 }
 
 /**
  * Called from goBack() / whenever a new chapter starts loading (pipeline.js,
- * erase-tool.js's _loadEraseLocalChapter, etc.) — resets the per-chapter
+ * erase-tool.js's loadEraseChapterFromSource, etc.) — resets the per-chapter
  * counter to zero without touching the lifetime total. Safe to call even
  * if no chapter was in progress (e.g. app just opened).
  */
-function resetChapterCost() {
+export function resetChapterCost() {
   _writeChapterTotal({ total: 0, calls: [] });
   _renderCostBadges();
 }
@@ -232,7 +234,7 @@ function resetChapterCost() {
  *   for the other two providers (see _deepLCost() — this is an exact
  *   count, not an estimate).
  */
-async function recordUsage(feature, usage, provider, model, fallbackChars = 0, fallbackImages = 0, deepLChars = 0) {
+export async function recordUsage(feature, usage, provider, model, fallbackChars = 0, fallbackImages = 0, deepLChars = 0) {
   await _loadRates();
 
   let cost, exact, breakdown;
@@ -275,13 +277,13 @@ async function recordUsage(feature, usage, provider, model, fallbackChars = 0, f
 // a link to the settings modal, not graphs/charts — this is a self-hosted
 // personal tool, not an analytics product.
 
-function _fmtCost(n) {
+export function _fmtCost(n) {
   if (n === 0) return '$0.00';
   if (n < 0.01) return '<$0.01';
   return `$${n.toFixed(2)}`;
 }
 
-function _renderCostBadges() {
+export function _renderCostBadges() {
   const chapterEl      = document.getElementById('cost-badge-chapter');
   const chapterEraseEl = document.getElementById('cost-badge-chapter-erase');
   const lifetimeEl     = document.getElementById('cost-badge-lifetime');
@@ -306,7 +308,7 @@ function _renderCostBadges() {
 // modal style — see correction-ui.js's _showFlowIssuesModal for the
 // pattern this mirrors.
 
-async function showCostSettings() {
+export async function showCostSettings() {
   await _loadRates();
   const existing = document.getElementById('cost-settings-modal');
   if (existing) existing.remove();
@@ -374,7 +376,7 @@ async function showCostSettings() {
   document.body.appendChild(modal);
 }
 
-function _saveRateOverrides() {
+export function _saveRateOverrides() {
   document.querySelectorAll('.cost-rate-input').forEach(input => {
     const { provider, model, field } = input.dataset;
     const val = parseFloat(input.value);
@@ -385,7 +387,7 @@ function _saveRateOverrides() {
   _renderCostBadges();
 }
 
-function _resetRateOverrides() {
+export function _resetRateOverrides() {
   _clearRateOverrides();
   document.getElementById('cost-settings-modal')?.remove();
   toast('Rates reset to rates.json defaults.');
@@ -393,7 +395,7 @@ function _resetRateOverrides() {
   showCostSettings();
 }
 
-function _confirmResetLifetime() {
+export function _confirmResetLifetime() {
   if (!confirm('Reset your lifetime cost total to $0? This only clears the local tracker — it does not refund anything or affect your actual API usage.')) return;
   _writeLifetime({ total: 0, byModel: {}, since: Date.now() });
   document.getElementById('cost-settings-modal')?.remove();

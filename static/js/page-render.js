@@ -7,7 +7,15 @@
 // ══════════════════════════════════════════════
 // RENDERING
 // ══════════════════════════════════════════════
-function addSkeleton(i) {
+import { updatePageInCache } from './cache.js';
+import { openCorrection } from './correction-ui.js';
+import { _ENGINE_LABEL, _pageStore, maybeShowEngineRecommendation, ocrPage } from './ocr-client.js';
+import { toggleReorderPanel } from './reorder-ui.js';
+import { _activeChapterId, _manualOrder, _sortRegions } from './state-and-constants.js';
+import { getModelInfo, getTargetLang, translateBatch } from './translate-client.js';
+import { esc, toast } from './utils.js';
+
+export function addSkeleton(i) {
   const el     = document.createElement('div');
   el.className = 'page-card';
   el.id        = `page-${i}`;
@@ -20,7 +28,7 @@ function addSkeleton(i) {
 }
 
 // Display-only: no translation panel (English chapters / full-art pages)
-function renderPageDisplay(el, pageIdx, total, imgSrc) {
+export function _renderPageDisplayCore(el, pageIdx, total, imgSrc) {
   el.innerHTML = `
     <div class="img-wrap">
       <img src="${esc(imgSrc)}" class="page-img page-img-only"
@@ -30,7 +38,7 @@ function renderPageDisplay(el, pageIdx, total, imgSrc) {
 }
 
 // Full render: image + numbered badges + translation panel
-function renderPage(el, pageIdx, total, imgSrc, regions) {
+export function _renderPageCore(el, pageIdx, total, imgSrc, regions) {
   // Apply any stored manual reorder for this page
   const moKey = `${_activeChapterId}_${pageIdx}`;
   const moIdx = _manualOrder.get(moKey);
@@ -94,7 +102,7 @@ function renderPage(el, pageIdx, total, imgSrc, regions) {
 
 // FIX #12: cdnUrl (for OCR retries) and imgSrc (for display) are now separate.
 //          data-cdn / data-img are stored on the button so retryPage can use each correctly.
-function renderPageError(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang) {
+export function _renderPageErrorCore(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang) {
   el.innerHTML = `
     <div class="img-wrap">
       <img src="${esc(imgSrc)}" class="page-img" loading="eager" alt="Page ${pageIdx + 1}">
@@ -122,7 +130,7 @@ document.addEventListener('click', e => {
 
 // FIX #2: regions now use translated[j].t for type (was always hardcoded 'speech')
 // FIX #12: uses cdnUrl for OCR, imgSrc for display
-async function retryPage(btn, el, pageIdx, total, cdnUrl, imgSrc, sourceLang) {
+export async function retryPage(btn, el, pageIdx, total, cdnUrl, imgSrc, sourceLang) {
   btn.disabled    = true;
   btn.textContent = 'Retrying…';
   try {
@@ -145,7 +153,7 @@ async function retryPage(btn, el, pageIdx, total, cdnUrl, imgSrc, sourceLang) {
 // (visionModeOverride='all', discarding whatever regions existed before).
 // Throws on failure — callers own their own button/error-UI state.
 // ══════════════════════════════════════════════
-async function _ocrTranslateAndRenderPage(el, pageIdx, total, cdnUrl, imgSrc, sourceLang, visionModeOverride) {
+export async function _ocrTranslateAndRenderPage(el, pageIdx, total, cdnUrl, imgSrc, sourceLang, visionModeOverride) {
   const targetLang = getTargetLang();
   const ocrData    = await ocrPage(cdnUrl, sourceLang, undefined, visionModeOverride);
   const ocrResult  = ocrData.regions;
@@ -211,7 +219,7 @@ async function _ocrTranslateAndRenderPage(el, pageIdx, total, cdnUrl, imgSrc, so
 // translate-client.js's onModelChange(), which hides the whole Vision OCR
 // settings group for DeepSeek specifically).
 // ══════════════════════════════════════════════
-async function redoPageWithVision(pageIdx) {
+export async function redoPageWithVision(pageIdx) {
   const info = getModelInfo();
   const key = info.provider === 'gemini'
     ? document.getElementById('ai-key')?.value?.trim()
@@ -251,3 +259,36 @@ async function redoPageWithVision(pageIdx) {
   }
 }
 
+// ══════════════════════════════════════════════
+// AFTER-RENDER HOOKS
+// ══════════════════════════════════════════════
+// trans-rail.js used to reassign renderPage/renderPageDisplay/renderPageError
+// at load time to append its own behaviour ("call the original, then re-sync
+// the docked panel"). That is impossible under ES modules — an imported
+// binding is read-only — so the wrapping is inverted: this module now owns the
+// seam and interested modules subscribe.
+//
+// The public functions below fire hooks UNCONDITIONALLY after the core body,
+// exactly as the old wrapper did. That matters: the core functions can return
+// early, and the old wrapper still ran its follow-up in those cases, so firing
+// from inside the core body would have been a subtle behaviour change.
+export const _afterPageRenderHooks = [];
+
+export function onAfterPageRender(fn) { _afterPageRenderHooks.push(fn); }
+
+export function _fireAfterPageRender(pageIdx) {
+  for (const fn of _afterPageRenderHooks) fn(pageIdx);
+}
+
+export function renderPageDisplay(el, pageIdx, total, imgSrc) {
+  _renderPageDisplayCore(el, pageIdx, total, imgSrc);
+  _fireAfterPageRender(pageIdx);
+}
+export function renderPage(el, pageIdx, total, imgSrc, regions) {
+  _renderPageCore(el, pageIdx, total, imgSrc, regions);
+  _fireAfterPageRender(pageIdx);
+}
+export function renderPageError(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang) {
+  _renderPageErrorCore(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang);
+  _fireAfterPageRender(pageIdx);
+}

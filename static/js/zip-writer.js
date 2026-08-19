@@ -13,7 +13,7 @@
 // layout); any unzip tool can open the result.
 // ═══════════════════════════════════════════════════════════════
 
-const _crc32Table = (() => {
+export const _crc32Table = (() => {
   const table = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
     let c = n;
@@ -23,7 +23,7 @@ const _crc32Table = (() => {
   return table;
 })();
 
-function _crc32(bytes) {
+export function _crc32(bytes) {
   let crc = 0xFFFFFFFF;
   for (let i = 0; i < bytes.length; i++) {
     crc = _crc32Table[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
@@ -31,7 +31,7 @@ function _crc32(bytes) {
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
-function _dosDateTime(date) {
+export function _dosDateTime(date) {
   const time = ((date.getHours() & 0x1F) << 11) | ((date.getMinutes() & 0x3F) << 5) | ((date.getSeconds() >> 1) & 0x1F);
   const dateVal = (((date.getFullYear() - 1980) & 0x7F) << 9) | (((date.getMonth() + 1) & 0xF) << 5) | (date.getDate() & 0x1F);
   return { time, dateVal };
@@ -42,7 +42,7 @@ function _dosDateTime(date) {
  * entries, where data is a Uint8Array (or anything new Uint8Array() accepts).
  * Returns a Uint8Array of the full archive.
  */
-function buildZip(files) {
+export function buildZip(files) {
   const encoder = new TextEncoder();
   const { time, dateVal } = _dosDateTime(new Date());
 
