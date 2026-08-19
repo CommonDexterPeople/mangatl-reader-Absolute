@@ -13,3 +13,7 @@ models/
 # Patch leftovers
 *.orig
 *.rej
+
+# Local OCR test pages — real manga scans, not ours to redistribute.
+# Tests look for them here and skip cleanly when absent.
+eval_samples/

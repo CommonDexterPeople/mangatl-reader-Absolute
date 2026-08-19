@@ -651,3 +651,136 @@ synthesized, so its value remains unproven; it is not what fixed this bug.
     thing to revisit, and it should be re-measured against the table
     above rather than nudged blind.
   - The Correction UI (✏ Correct) remains the fallback for both.
+
+---
+
+## RESOLVED (measured on 15 real pages, both engines): adjacent text containers merged across a clean gutter
+
+**Status: FIXED.** `HORIZONTAL_GAP_FACTOR` lowered from an unvalidated 0.5 to
+a measured 0.3. Found while probing a *different* hypothesis (below), which
+is worth recording: the check that found this was looking for something else
+entirely and came up empty.
+
+**Symptom — same class as the fused double-bubble bug, different cause.**
+Two adjacent text containers separated only by whitespace merged into one
+region with their lines interleaved. On `manga page test_Untranslated.jpg`:
+
+    Y ENCIMA, EN EL CAPÍTULO T¿Y EN ESE MOMENTO 2, CUANDO AKAYA, QUE DEJÓ
+    AKAYA TAMPOCO SE ESTÁ EL TENIS DE MESA EN LA COLUMPIANDO, SOLO ESTÁ …
+
+which is two side-by-side caption boxes read as one. **Present on BOTH
+engines** — this is not RapidOCR-specific, and EasyOCR's own output on the
+same page showed the identical interleaving (`Y Encima, En El Capitulo AKAYA
+Tampoco SE ESTÁ i2y En ESe Momento 2,Cuanvo …`). Two further real cases:
+adjacent speech bubbles on `Manga page test 2_Untranslated.jpg` (and its
+translated twin), and — notably — a *second* over-merge on `Brazil_raw.jpg`
+itself, where the small `HUH?` bubble was absorbed into the neighbouring
+`…CHEGAMOS` bubble. That one had been on the page all along; the waist-veto
+verification missed it because it only checked the two bubbles that fix
+targeted.
+
+**Why none of the three existing vetoes can catch it.** Measured, not
+assumed:
+
+  - `_crosses_bubble_boundary`: both containers resolve to ONE flat-light
+    component. The gutter is pure 255 white across its full width (sampled
+    x=1000–1013, min=255, zero dark pixels), and white is flat+light, so
+    `_find_bubble_components` includes the gutter IN the mask rather than
+    treating it as a boundary. There is no boundary pixel to find.
+  - `_bubble_outline_mask` (fix attempt #3): same reason — it detects faint
+    ink lines, and there is no ink here at all.
+  - `_waist_separates_boxes`: in scope (the pairs are horizontal) and
+    correctly reports no constriction. These are RECTANGLES, and two adjacent
+    rectangles produce a constant-height silhouette. Per-column extent across
+    the gutter runs 348→355→363→372→379px — monotonically increasing, no dip.
+    Waist ratio 0.948 against the 0.85 threshold.
+
+  Shape and ink signals are both *structurally* absent for this container
+  shape. Gap SIZE is the only remaining signal — exactly what this file's
+  earlier entry predicted ("only the gap's SIZE relative to normal
+  same-bubble spacing can" distinguish the two cases).
+
+**The actual mechanism.** Only three fragment pairs bridge the gutter, the
+widest lines in each box, at 13–16px horizontal gaps. With ~37px line
+heights, `margin_h = height x margin_scale x HORIZONTAL_GAP_FACTOR` gave
+each box 9.25px of reach at 0.5 — 18.5px combined, enough to bridge 13–16px.
+At 0.3 the combined reach is 11.1px, which is not.
+
+**Sweep evidence.** OCR was run once per page per engine and the fragments
+cached, then only `_merge_bubble_regions` was re-run across
+`HORIZONTAL_GAP_FACTOR` ∈ {0.5, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05},
+so nothing but this constant varied.
+
+| factor | RapidOCR pages changed | EasyOCR pages changed |
+|---|---|---|
+| 0.5 (old) | baseline | baseline |
+| 0.4  | 1 | 0 |
+| 0.35 | 3 | 2 (Brazil noise SFX regroup only) |
+| **0.3** | **5** | **3** |
+| 0.25 | 5 | 3 |
+| 0.2  | 5 | — |
+| 0.15–0.05 | 6 (plateau) | — |
+
+Every single change at every value, on both engines, was a SPLIT that
+inspection confirmed correct — no page ever lost a region, and no line was
+broken in half. Beyond the three target cases, lower values additionally
+separated SFX from adjacent dialogue (`かい CHATTER` from `AINDA BEM.`,
+`Flinch` from `EVEN THOUGH I DON'T REALLY GET…`), which are also correct.
+0.3 is the loosest value that fixes all three target cases: RapidOCR needs
+≤0.35, EasyOCR needs ≤0.30.
+
+EasyOCR's only non-target change at 0.3 is on Brazil, where the SFX region
+`78 DUn` becomes `DUn` — a noise fragment separating from another noise
+fragment, region count unchanged at 14. Worth noting because the waist-veto
+entry above established "EasyOCR byte-identical" as the bar; this clears the
+bar on region counts and on every real dialogue region, but not literally
+byte-for-byte.
+
+**Test:** `test_adjacent_container_gap.py` — synthetic geometry using the
+real page's measured numbers (37px line height, 14px gutter, one continuous
+component spanning both containers). Verified to fail at the old 0.5,
+reproducing the interleaving, and pass at 0.3. It also asserts the constant
+stays ≤0.35, so it cannot drift back up unnoticed.
+
+**STILL UNVALIDATED — the case this constant exists to protect.** None of
+the 15 sample pages contains a bubble whose OCR fragments actually need
+horizontal merging (staggered/zigzag lettering split into side-by-side
+fragments). That absence is also why every reduction looked free all the way
+down to 0.05. If a page turns up where legitimate side-by-side fragments
+fail to merge, THAT is the page to re-measure against — and the answer may
+be that gap size alone is insufficient and this needs to become adaptive
+(gap relative to the page's own median intra-bubble spacing) rather than a
+fixed multiplier.
+
+---
+
+## NOT REPRODUCIBLE on 15 real pages: the waist veto's horizontal-only scope
+
+Recorded so it is not re-investigated from scratch. `_waist_separates_boxes`
+only considers pairs where `|dx| > |dy|`, so a diagonally-offset pair
+spanning two lobes of a fused double-bubble should escape it. Confirmed
+reachable **in synthetic geometry**: same component, same measurable
+constriction (waist ratio 0.646, well under the 0.85 threshold), vetoed when
+the pair is horizontal and not vetoed when the same pair is offset
+diagonally — the merge then goes through.
+
+**On real pages it does not happen.** Every call into the veto was
+instrumented across all 15 sample pages on BOTH engines, recording any pair
+that (a) reached the veto, meaning its expanded boxes already overlapped,
+(b) was skipped by the `|dx| > |dy|` guard, and (c) would have been vetoed
+without that guard. **Zero such pairs, on either engine, on any page.**
+
+The reason is geometric: the anisotropic margins make it very hard to hit.
+Horizontal reach is `0.25 x height` (now `0.15 x height`) while vertical
+reach is `0.8 x height`, so a pair far enough apart horizontally to span two
+lobes is almost never also close enough vertically — unless the fragments
+are unusually TALL, which in practice means vertical CJK text. Those
+languages are all in `VISION_LANGS` and route to Gemini Vision by default,
+though the local engine still runs for box positions, so the path is not
+fully unreachable.
+
+Not fixed. Widening the scope to vertical pairs is explicitly warned against
+in the waist-veto entry above (ordinary line-to-line pairs are the hot path;
+a false positive there shatters normal dialogue), and there is no real page
+to tune against. If a vertical-CJK page with a fused double-bubble ever
+turns up, this is the entry to start from.

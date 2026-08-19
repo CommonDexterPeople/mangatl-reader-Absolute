@@ -2485,13 +2485,50 @@ def _merge_bubble_regions(
     # can't tell those apart; only the gap's SIZE relative to normal
     # same-bubble spacing can, which is what this constant controls.
     #
-    # UNVALIDATED STARTING VALUE — chosen conservatively small relative to
-    # LINE_GAP_FACTOR, not yet measured against real pages. Needs checking
-    # against (a) the RapidOCR Brazil_raw.jpg case (confirm the two bubbles
-    # no longer merge) and (b) a real staggered-lettering page (confirm that
-    # legitimate merge still succeeds) before this is trusted — same bar
-    # every other constant in this file is held to.
-    HORIZONTAL_GAP_FACTOR = 0.5
+    # MEASURED, 2026-08-19, against 15 real pages on BOTH engines (was an
+    # unvalidated 0.5). Lowered to 0.3 because 0.5 was over-merging pairs of
+    # ADJACENT TEXT CONTAINERS across a clean whitespace gutter — the exact
+    # failure this constant was introduced to prevent, at a value too loose
+    # to actually prevent it.
+    #
+    # Three distinct real-page cases, all fixed by 0.3, all previously
+    # producing a single region with the two containers' lines interleaved:
+    #   manga page test_Untranslated.jpg  two side-by-side caption boxes
+    #                                     ("Y ENCIMA, EN EL CAPÍTULO…" /
+    #                                     "¿Y EN ESE MOMENTO…") — hit on BOTH
+    #                                     engines, not RapidOCR-specific.
+    #   Manga page test 2_Untranslated.jpg + its translated twin
+    #                                     two adjacent speech bubbles.
+    #   Brazil_raw.jpg                    "HUH?" bubble absorbed into the
+    #                                     neighbouring "…CHEGAMOS" bubble —
+    #                                     a second over-merge on the page the
+    #                                     waist veto was verified against,
+    #                                     which that verification missed
+    #                                     because it only checked the two
+    #                                     bubbles the waist fix targeted.
+    #
+    # Why the existing vetoes can't catch these: the caption boxes are ONE
+    # flat-light component (the gutter is pure 255 white — measured — so
+    # there is no ink for _crosses_bubble_boundary or the outline carving to
+    # find), and they are RECTANGLES, so the silhouette has no constriction
+    # for _waist_separates_boxes to measure (extent across the gutter runs
+    # 348→355→363→372→379px — monotonic, waist ratio 0.948 vs the 0.85
+    # threshold). Shape and ink signals are both structurally absent here;
+    # gap SIZE is the only thing left, which is precisely what this constant
+    # controls.
+    #
+    # Sweep evidence (0.5 → 0.05, merge re-run over cached OCR fragments so
+    # only this constant varied): every single change at every value was a
+    # SPLIT that inspection confirmed correct, on both engines — no page ever
+    # lost a region or had a line broken in half. 0.3 is the loosest value
+    # that fixes all three cases (RapidOCR needs ≤0.35, EasyOCR ≤0.30).
+    #
+    # STILL UNVALIDATED: the staggered/zigzag-lettering case this constant
+    # exists to protect. None of the 15 sample pages contains a bubble whose
+    # OCR fragmentsneeds horizontal merging, which is also why every reduction
+    # looked free. If a page shows legitimate side-by-side fragments failing
+    # to merge, THAT is the case to re-measure against — not this one.
+    HORIZONTAL_GAP_FACTOR = 0.3
 
     is_webtoon  = (img_h / max(img_w, 1)) > 2.0
     eff_scale_v = margin_scale * LINE_GAP_FACTOR       * (0.6 if is_webtoon else 1.0)
