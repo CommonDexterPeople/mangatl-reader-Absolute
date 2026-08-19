@@ -127,6 +127,10 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 ```
 .
 ├── server.py           Flask backend — routes, OCR pipeline, translation providers
+├── mtl/                Modules split out of server.py
+│   ├── config.py          Constants shared by server.py and the modules below
+│   ├── security.py        SSRF allowlist, image-body loading, exposure guard
+│   └── inpaint.py         Text erasure: LaMa, OpenCV inpainting, flat fill, smudge pass
 ├── static/
 │   ├── index.html         Page markup only
 │   ├── style.css          All styling
@@ -134,6 +138,13 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 │                           export, local-source handling, MangaDex auth, etc.
 └── build.py             Reassembles everything into one distributable .py file
 ```
+
+`mtl/` exists because `server.py` had grown to ~6,100 lines with the first route
+around line 4,600. The modules there are ordinary imports, so the tests import and
+call the real functions rather than scraping source text. `build.py` **inlines**
+them into the single-file build rather than importing them — so a module in `mtl/`
+may import from an earlier one in `config → security → inpaint` order, but never
+from `server.py` itself, and CI checks the built file has no `mtl` imports left.
 
 Load order matters in `static/js/` — these are plain `<script>` tags sharing one global scope, not ES modules, so a new module's `<script>` tag needs to go into `index.html` after whatever it depends on.
 
@@ -144,7 +155,7 @@ Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly wh
 ## Known limitations
 
 - Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
-- `test_ssrf_guard.py` and `test_deepseek_rescue.py` cover the SSRF allowlist and the DeepSeek JSON-rescue heuristic; there's no broader test suite beyond those two yet. Both run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS file and a `build.py` smoke test.
+- Five test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, and three bubble-segmentation cases; there's no broader suite beyond those yet, and the bubble tests are synthetic geometry rather than real pages. All five run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
 
 ---
 
