@@ -127,7 +127,11 @@ from werkzeug.exceptions import HTTPException
 from PIL import Image, ImageDraw, ImageFont
 
 HOST         = "127.0.0.1"
-PORT         = 8080
+# Overridable so you can run a second instance, or slot in behind a tool that
+# assigns a port, without editing this file. Matches how MTL_SUWAYOMI_HOST and
+# MTL_ALLOW_EXPOSED are already handled. 8080 stays the default everything
+# else (README, the browser auto-open below) assumes.
+PORT         = int(os.environ.get("PORT") or 8080)
 
 MANGADEX_API  = "https://api.mangadex.org"
 MANGADEX_AUTH = "https://auth.mangadex.org/realms/mangadex/protocol/openid-connect/token"

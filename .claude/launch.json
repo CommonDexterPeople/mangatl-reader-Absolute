@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mangatl",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["server.py"],
+      "port": 8080,
+      "autoPort": true,
+      "env": {
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  ]
+}
