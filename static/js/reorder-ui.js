@@ -22,23 +22,9 @@
   // Populate Continue Reading card / recent list on home screen
   _renderHistoryUI();
 
-  // Restore MangaDex login state
-  const savedAccess  = localStorage.getItem('mtl_md_access');
-  const savedRefresh = localStorage.getItem('mtl_md_refresh');
-  const savedExpiry  = parseInt(localStorage.getItem('mtl_md_expiry') || '0', 10);
-  const savedMdUser  = localStorage.getItem('mtl_md_username') || '';
-  _mdClientId     = localStorage.getItem('mtl_md_client_id')     || '';
-  _mdClientSecret = localStorage.getItem('mtl_md_client_secret') || '';
-  if (savedAccess && savedRefresh) {
-    _mdAccessToken  = savedAccess;
-    _mdRefreshToken = savedRefresh;
-    _mdTokenExpiry  = savedExpiry;
-    _mdUsername     = savedMdUser;
-    _setMdStatus(true, savedMdUser);
-    // Restore client ID field (not secret — keep that blank for privacy)
-    if (_mdClientId) document.getElementById('md-client-id').value = _mdClientId;
-    if (savedMdUser) document.getElementById('md-username').value  = savedMdUser;
-  }
+  // Restore MangaDex login state (lives in mangadex-auth.js, next to the
+  // _md* state it writes — see restoreMdAuthFromStorage()'s comment).
+  restoreMdAuthFromStorage();
 
 
   const legacyKey = localStorage.getItem('mtl_ai_key');

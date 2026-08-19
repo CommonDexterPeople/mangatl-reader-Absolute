@@ -20,7 +20,7 @@ function addSkeleton(i) {
 }
 
 // Display-only: no translation panel (English chapters / full-art pages)
-function renderPageDisplay(el, pageIdx, total, imgSrc) {
+function _renderPageDisplayCore(el, pageIdx, total, imgSrc) {
   el.innerHTML = `
     <div class="img-wrap">
       <img src="${esc(imgSrc)}" class="page-img page-img-only"
@@ -30,7 +30,7 @@ function renderPageDisplay(el, pageIdx, total, imgSrc) {
 }
 
 // Full render: image + numbered badges + translation panel
-function renderPage(el, pageIdx, total, imgSrc, regions) {
+function _renderPageCore(el, pageIdx, total, imgSrc, regions) {
   // Apply any stored manual reorder for this page
   const moKey = `${_activeChapterId}_${pageIdx}`;
   const moIdx = _manualOrder.get(moKey);
@@ -94,7 +94,7 @@ function renderPage(el, pageIdx, total, imgSrc, regions) {
 
 // FIX #12: cdnUrl (for OCR retries) and imgSrc (for display) are now separate.
 //          data-cdn / data-img are stored on the button so retryPage can use each correctly.
-function renderPageError(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang) {
+function _renderPageErrorCore(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang) {
   el.innerHTML = `
     <div class="img-wrap">
       <img src="${esc(imgSrc)}" class="page-img" loading="eager" alt="Page ${pageIdx + 1}">
@@ -251,3 +251,36 @@ async function redoPageWithVision(pageIdx) {
   }
 }
 
+// ══════════════════════════════════════════════
+// AFTER-RENDER HOOKS
+// ══════════════════════════════════════════════
+// trans-rail.js used to reassign renderPage/renderPageDisplay/renderPageError
+// at load time to append its own behaviour ("call the original, then re-sync
+// the docked panel"). That is impossible under ES modules — an imported
+// binding is read-only — so the wrapping is inverted: this module now owns the
+// seam and interested modules subscribe.
+//
+// The public functions below fire hooks UNCONDITIONALLY after the core body,
+// exactly as the old wrapper did. That matters: the core functions can return
+// early, and the old wrapper still ran its follow-up in those cases, so firing
+// from inside the core body would have been a subtle behaviour change.
+const _afterPageRenderHooks = [];
+
+function onAfterPageRender(fn) { _afterPageRenderHooks.push(fn); }
+
+function _fireAfterPageRender(pageIdx) {
+  for (const fn of _afterPageRenderHooks) fn(pageIdx);
+}
+
+function renderPageDisplay(el, pageIdx, total, imgSrc) {
+  _renderPageDisplayCore(el, pageIdx, total, imgSrc);
+  _fireAfterPageRender(pageIdx);
+}
+function renderPage(el, pageIdx, total, imgSrc, regions) {
+  _renderPageCore(el, pageIdx, total, imgSrc, regions);
+  _fireAfterPageRender(pageIdx);
+}
+function renderPageError(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang) {
+  _renderPageErrorCore(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang);
+  _fireAfterPageRender(pageIdx);
+}

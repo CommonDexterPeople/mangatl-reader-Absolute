@@ -299,8 +299,4 @@ async function downloadAllCachedChapters() {
 // Hook the chapter list into the existing cache-UI refresh cycle so it
 // stays in sync with clearCache() / setCachedChapter() without those
 // functions needing to know this file exists.
-const _origRefreshCacheUI = refreshCacheUI;
-refreshCacheUI = function () {
-  _origRefreshCacheUI();
-  _renderChapterList();
-};
+onAfterCacheUIRefresh(_renderChapterList);

@@ -211,3 +211,8 @@ async function ocrPage(cdnUrl, lang, signal, visionModeOverride) {
   };
 }
 
+
+// Write-access for other modules — see the note on setCancelled() in
+// state-and-constants.js for why these exist under ES modules.
+function setChapterEngineOverride(v) { _chapterEngineOverride = v; }
+function setEngineRecShown(v)        { _engineRecShown        = v; }

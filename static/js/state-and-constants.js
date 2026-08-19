@@ -93,3 +93,25 @@ function _sortRegions(regions) {
   });
 }
 
+
+// ══════════════════════════════════════════════
+// STATE SETTERS
+// ══════════════════════════════════════════════
+// ES modules make imported bindings read-only: `import { cancelled }` gives
+// you a live view of this module's variable, but `cancelled = true` from
+// another module is a hard error ("Cannot assign to import"). Under the old
+// plain-<script> setup every file shared one global scope, so pipeline.js and
+// utils.js just assigned these directly.
+//
+// Reads still work exactly as before — live bindings mean an importer always
+// sees the current value, so only the WRITES needed a door. These are that
+// door. Deliberately one setter per variable rather than a single mutable
+// state object, because that keeps every existing read site (`if (cancelled)`)
+// untouched; a state object would have meant rewriting far more code than the
+// 27 assignments that actually had to change.
+function setCancelled(v)        { cancelled        = v; }
+function setAbortController(v)  { abortController  = v; }
+function setToastTimer(v)       { toastTimer       = v; }
+function setPrevChapterId(v)    { prevChapterId    = v; }
+function setNextChapterId(v)    { nextChapterId    = v; }
+function setActiveChapterId(v)  { _activeChapterId = v; }

@@ -104,7 +104,7 @@ function _fmtBytes(b) {
   return (b/1024/1024).toFixed(2) + ' MB';
 }
 
-function refreshCacheUI() {
+function _refreshCacheUICore() {
   const { count, bytes } = _getCacheSize();
 
   // ── Reader header pill ──
@@ -199,3 +199,19 @@ function getEffectivePageRegions(chapterId, pageIdx, fallbackRegions) {
   return fallbackRegions;
 }
 
+// ══════════════════════════════════════════════
+// CACHE-UI REFRESH HOOKS
+// ══════════════════════════════════════════════
+// downloads.js used to reassign refreshCacheUI to append its chapter-list
+// render. Same ES-module problem, same inversion as page-render.js's hooks:
+// this module owns the seam, downloads.js subscribes to it. clearCache() and
+// setCachedChapter() still call refreshCacheUI() without knowing downloads.js
+// exists, which was the point of the original wrapper.
+const _afterCacheUIRefreshHooks = [];
+
+function onAfterCacheUIRefresh(fn) { _afterCacheUIRefreshHooks.push(fn); }
+
+function refreshCacheUI() {
+  _refreshCacheUICore();
+  for (const fn of _afterCacheUIRefreshHooks) fn();
+}

@@ -63,14 +63,14 @@ async function startPipelineWithId(chapterId, quality, targetLang) {
   quality    = quality    || document.getElementById('quality').value;
   targetLang = targetLang || getTargetLang();
 
-  cancelled = false;
+  setCancelled(false);
   if (abortController) abortController.abort();
-  abortController = new AbortController();
+  setAbortController(new AbortController());
   const signal = abortController.signal;
 
-  _activeChapterId = chapterId;
-  prevChapterId    = null;
-  nextChapterId    = null;
+  setActiveChapterId(chapterId);
+  setPrevChapterId(null);
+  setNextChapterId(null);
   // Release any leftover state from a PREVIOUS chapter before this one
   // starts writing into _pageStore/_manualOrder/etc. — see
   // _clearChapterState's docstring in utils.js for why this must run
@@ -125,7 +125,7 @@ async function startPipelineWithId(chapterId, quality, targetLang) {
       fetchAdjacentChapters(meta.mangaId, chapterId, sourceLang, signal)
         .then(({ prev, next }) => {
           if (_activeChapterId !== startedId || cancelled) return;
-          prevChapterId = prev; nextChapterId = next;
+          setPrevChapterId(prev); setNextChapterId(next);
           updateNavButtons();
         });
     }
@@ -486,9 +486,9 @@ async function startPipelineWithLocalSource(localChapter, targetLang) {
   targetLang = targetLang || getTargetLang();
   if (!_validateApiKeyOrToast()) return;
 
-  cancelled = false;
+  setCancelled(false);
   if (abortController) abortController.abort();
-  abortController = new AbortController();
+  setAbortController(new AbortController());
   const signal = abortController.signal;
 
   const chapterId  = localChapter.id;
@@ -496,9 +496,9 @@ async function startPipelineWithLocalSource(localChapter, targetLang) {
   const isEnglish  = sourceLang === 'en';
   const total      = localChapter.pages.length;
 
-  _activeChapterId = chapterId;
-  prevChapterId    = null;   // no prev/next chapter for a local source —
-  nextChapterId    = null;   // updateNavButtons() below hides the nav bar
+  setActiveChapterId(chapterId);
+  setPrevChapterId(null);   // no prev/next chapter for a local source —
+  setNextChapterId(null);   // updateNavButtons() below hides the nav bar
   // Release any leftover state from a PREVIOUS chapter — see
   // _clearChapterState's docstring in utils.js.
   _clearChapterState();
@@ -558,9 +558,9 @@ async function startPipelineWithSuwayomiSource(chapter, targetLang) {
   targetLang = targetLang || getTargetLang();
   if (!_validateApiKeyOrToast()) return;
 
-  cancelled = false;
+  setCancelled(false);
   if (abortController) abortController.abort();
-  abortController = new AbortController();
+  setAbortController(new AbortController());
   const signal = abortController.signal;
 
   const chapterId  = chapter.id;
@@ -568,9 +568,9 @@ async function startPipelineWithSuwayomiSource(chapter, targetLang) {
   const isEnglish  = sourceLang === 'en';
   const total      = chapter.pages.length;
 
-  _activeChapterId = chapterId;
-  prevChapterId    = null;   // no adjacent-chapter feed for Suwayomi yet —
-  nextChapterId    = null;   // updateNavButtons() below hides the nav bar
+  setActiveChapterId(chapterId);
+  setPrevChapterId(null);   // no adjacent-chapter feed for Suwayomi yet —
+  setNextChapterId(null);   // updateNavButtons() below hides the nav bar
   // Release any leftover state from a PREVIOUS chapter — see
   // _clearChapterState's docstring in utils.js.
   _clearChapterState();

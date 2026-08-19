@@ -107,7 +107,7 @@ function _initWorkingRegions(pageIdx) {
 }
 
 // ── Open / Close ──────────────────────────────
-function openCorrection(pageIdx) {
+function _openCorrectionCore(pageIdx) {
   const card = document.getElementById(`page-${pageIdx}`);
   if (!card) return;
   const pd = _pageStore.get(_corrStoreKey(pageIdx));
@@ -124,7 +124,7 @@ function openCorrection(pageIdx) {
   _updatePendingButton(pageIdx);
 }
 
-function closeCorrection(pageIdx) {
+function _closeCorrectionCore(pageIdx) {
   const card = document.getElementById(`page-${pageIdx}`);
   if (!card) return;
   _corrOverlayCtl[pageIdx]?.detach();
@@ -1113,4 +1113,29 @@ function _applyFlowIssues(pageIdx) {
   if (sid != null) _renderCorrSidebar(pageIdx);
   _renderCorrOverlay(pageIdx);
   toast(`Applied ${count} flow fix${count !== 1 ? 'es' : ''}.`);
+}
+
+// ══════════════════════════════════════════════
+// CORRECTION OPEN/CLOSE HOOKS
+// ══════════════════════════════════════════════
+// See the note on onAfterPageRender() in page-render.js — same inversion, for
+// the same reason. trans-rail.js needs to act BEFORE the card's innerHTML is
+// replaced (to disconnect its MutationObserver) and again AFTER, so this seam
+// exposes both edges rather than only an "after".
+const _beforeCorrectionOpenHooks = [];
+const _afterCorrectionOpenHooks  = [];
+const _afterCorrectionCloseHooks = [];
+
+function onBeforeCorrectionOpen(fn) { _beforeCorrectionOpenHooks.push(fn); }
+function onAfterCorrectionOpen(fn)  { _afterCorrectionOpenHooks.push(fn); }
+function onAfterCorrectionClose(fn) { _afterCorrectionCloseHooks.push(fn); }
+
+function openCorrection(pageIdx) {
+  for (const fn of _beforeCorrectionOpenHooks) fn(pageIdx);
+  _openCorrectionCore(pageIdx);
+  for (const fn of _afterCorrectionOpenHooks) fn(pageIdx);
+}
+function closeCorrection(pageIdx) {
+  _closeCorrectionCore(pageIdx);
+  for (const fn of _afterCorrectionCloseHooks) fn(pageIdx);
 }

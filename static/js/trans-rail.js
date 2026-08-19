@@ -44,47 +44,26 @@ let _railSourceMO    = null;  // MutationObserver watching the currently-docked 
 // top of the MutationObserver below, and it's what handles the very
 // first render (before anything exists for the observer to watch).
 // ══════════════════════════════════════════════
-(function _wrapRenderers() {
-  const _origRenderPage        = renderPage;
-  const _origRenderPageDisplay = renderPageDisplay;
-  const _origRenderPageError   = renderPageError;
+// Re-sync the docked panel after any (re-)render, and around correction
+// open/close. These used to be two IIFEs that reassigned page-render.js's and
+// correction-ui.js's functions at load time; those modules now expose hooks
+// instead (see onAfterPageRender / onBeforeCorrectionOpen there), because an
+// ES module can't write to another module's binding. Same three call points,
+// same order, just subscribed rather than monkey-patched.
+onAfterPageRender(_transRailOnPageRendered);
 
-  renderPage = function (el, pageIdx, total, imgSrc, regions) {
-    _origRenderPage(el, pageIdx, total, imgSrc, regions);
-    _transRailOnPageRendered(pageIdx);
-  };
-  renderPageDisplay = function (el, pageIdx, total, imgSrc) {
-    _origRenderPageDisplay(el, pageIdx, total, imgSrc);
-    _transRailOnPageRendered(pageIdx);
-  };
-  renderPageError = function (el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang) {
-    _origRenderPageError(el, pageIdx, total, cdnUrl, imgSrc, errMsg, sourceLang);
-    _transRailOnPageRendered(pageIdx);
-  };
-})();
-
-// Also wrap openCorrection/closeCorrection: while a page is being
-// corrected, its #trans-panel-<N> is temporarily gone (correction-ui
-// replaces the whole card's innerHTML), so the sidebar should show a
-// neutral note instead of a blank/stale panel while that's open.
-(function _wrapCorrection() {
-  const _origOpen  = openCorrection;
-  const _origClose = closeCorrection;
-  openCorrection = function (pageIdx) {
-    // Stop watching this page's card BEFORE it gets replaced — the
-    // MutationObserver fires asynchronously, which would otherwise
-    // land after _renderCorrectingNote() below and overwrite it with
-    // a generic "Translating…" resync triggered by the card's old
-    // .trans-panel being destroyed.
-    if (_railDockedPage === pageIdx && _railSourceMO) _railSourceMO.disconnect();
-    _origOpen(pageIdx);
-    if (_railDockedPage === pageIdx) _renderCorrectingNote();
-  };
-  closeCorrection = function (pageIdx) {
-    _origClose(pageIdx);
-    _transRailOnPageRendered(pageIdx);
-  };
-})();
+onBeforeCorrectionOpen(pageIdx => {
+  // Stop watching this page's card BEFORE it gets replaced — the
+  // MutationObserver fires asynchronously, which would otherwise
+  // land after _renderCorrectingNote() below and overwrite it with
+  // a generic "Translating…" resync triggered by the card's old
+  // .trans-panel being destroyed.
+  if (_railDockedPage === pageIdx && _railSourceMO) _railSourceMO.disconnect();
+});
+onAfterCorrectionOpen(pageIdx => {
+  if (_railDockedPage === pageIdx) _renderCorrectingNote();
+});
+onAfterCorrectionClose(_transRailOnPageRendered);
 
 // Called after ANY (re-)render of a page's translation panel.
 function _transRailOnPageRendered(pageIdx) {

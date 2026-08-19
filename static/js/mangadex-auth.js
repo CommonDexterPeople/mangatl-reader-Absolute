@@ -119,3 +119,33 @@ function logoutMangaDex() {
   toast('Logged out of MangaDex.');
 }
 
+
+// ══════════════════════════════════════════════
+// SESSION RESTORE
+// ══════════════════════════════════════════════
+// Rehydrate a saved MangaDex login from localStorage on startup.
+//
+// This body used to live inside reorder-ui.js's init IIFE, assigning the six
+// _md* variables above directly across file boundaries. That worked when every
+// file shared one global scope; under ES modules an importer can't write to
+// another module's binding at all. Moving it here — next to the state it
+// actually owns — fixes that without needing six setters, and puts the restore
+// logic in the file a reader would look in for it.
+function restoreMdAuthFromStorage() {
+  const savedAccess  = localStorage.getItem('mtl_md_access');
+  const savedRefresh = localStorage.getItem('mtl_md_refresh');
+  const savedExpiry  = parseInt(localStorage.getItem('mtl_md_expiry') || '0', 10);
+  const savedMdUser  = localStorage.getItem('mtl_md_username') || '';
+  _mdClientId     = localStorage.getItem('mtl_md_client_id')     || '';
+  _mdClientSecret = localStorage.getItem('mtl_md_client_secret') || '';
+  if (savedAccess && savedRefresh) {
+    _mdAccessToken  = savedAccess;
+    _mdRefreshToken = savedRefresh;
+    _mdTokenExpiry  = savedExpiry;
+    _mdUsername     = savedMdUser;
+    _setMdStatus(true, savedMdUser);
+    // Restore client ID field (not secret — keep that blank for privacy)
+    if (_mdClientId) document.getElementById('md-client-id').value = _mdClientId;
+    if (savedMdUser) document.getElementById('md-username').value  = savedMdUser;
+  }
+}

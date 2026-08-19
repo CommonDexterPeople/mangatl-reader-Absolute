@@ -104,7 +104,7 @@ function toast(msg, dur = 6000) {
   t.textContent = msg;
   t.style.display = 'block';
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.style.display = 'none'; }, dur);
+  setToastTimer(setTimeout(() => { t.style.display = 'none'; }, dur));
 }
 function setStatus(msg) { document.getElementById('reader-status').textContent = msg; }
 function setProgress(done, total) {
@@ -160,13 +160,13 @@ function _clearChapterState() {
   // every page). Both deliberately in-memory, not localStorage — this is
   // a per-session override, not a persisted preference; "always use my
   // pick for <lang>" (mtl_local_engine_always) is the persisted one.
-  _chapterEngineOverride = null;
-  _engineRecShown = false;
+  setChapterEngineOverride(null);
+  setEngineRecShown(false);
   hideEngineRecBanner();
 }
 
 function goBack() {
-  cancelled = true;
+  setCancelled(true);
   if (abortController) abortController.abort();
   flushHistoryProgress();  // save final page position before it's gone — see history.js
   _stopHistoryTracking();  // stop watching .page-card elements about to be removed below
