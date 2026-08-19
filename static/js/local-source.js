@@ -41,6 +41,7 @@
 // base64-encoded per OCR/crop/export request, on demand.
 import { _validateApiKeyOrToast, startPipelineWithLocalSource } from './pipeline.js';
 import { getTargetLang } from './translate-client.js';
+import { makeLocalSourceUI } from './chapter-source.js';
 import { toast } from './utils.js';
 
 export const _localBlobStore = new Map();   // "local-blob:<id>" -> Blob
@@ -254,6 +255,12 @@ export function _buildLocalChapter(kind, title, sourceLang, orderedFiles) {
     title,
     sourceLang,
     pages,
+    // A local folder/CBZ has no stable series identity to key a glossary on,
+    // and its pages are object URLs over blobs held only in this tab — a cache
+    // entry would survive the reload that destroys the images it points at.
+    // See the Chapter shape in chapter-source.js.
+    mangaId:   null,
+    cacheable: false,
   };
 }
 
@@ -296,41 +303,26 @@ export async function chapterFromCbz(file, sourceLang) {
 }
 
 // ── Home-screen wiring ───────────────────────────────────────────
-export function toggleLocalSource() {
-  document.getElementById('local-source-wrap')?.classList.toggle('open');
-}
+// ── Reader source controls ───────────────────────────────────────────────────
+// The reader's half of the local-folder/CBZ picker. Everything about how these
+// behave lives in makeLocalSourceUI() (chapter-source.js); this supplies only
+// what is specific to this screen: the DOM id prefix (none — the Erase Tool's
+// copies are the prefixed ones), the API-key guard, and where a loaded Chapter
+// goes. erase-tool.js registers the same factory with its own three answers.
+const _readerLocalSource = makeLocalSourceUI({
+  idPrefix: '',
+  guard:    _validateApiKeyOrToast,
+  onChapter: (chapter) => startPipelineWithLocalSource(chapter, getTargetLang()),
+});
 
-export function _localSourceLang() {
-  return document.getElementById('local-source-lang')?.value || 'ja';
-}
-
-export function triggerLocalFolderPicker() { document.getElementById('local-folder-input')?.click(); }
-export function triggerLocalCbzPicker()    { document.getElementById('local-cbz-input')?.click(); }
-
-export async function handleLocalFolderInput(event) {
-  const files = event.target.files;
-  event.target.value = '';  // allow picking the same folder again later
-  if (!files || !files.length) return;
-  if (!_validateApiKeyOrToast()) return;
-  try {
-    toast('Reading folder…', 3000);
-    const chapter = await chapterFromFileList(files, _localSourceLang());
-    startPipelineWithLocalSource(chapter, getTargetLang());
-  } catch (e) {
-    toast(`Couldn't read that folder: ${e.message}`);
-  }
-}
-
-export async function handleLocalCbzInput(event) {
-  const file = event.target.files?.[0];
-  event.target.value = '';
-  if (!file) return;
-  if (!_validateApiKeyOrToast()) return;
-  try {
-    toast('Unpacking .cbz…', 3000);
-    const chapter = await chapterFromCbz(file, _localSourceLang());
-    startPipelineWithLocalSource(chapter, getTargetLang());
-  } catch (e) {
-    toast(`Couldn't read that file: ${e.message}`);
-  }
-}
+// Exported as function declarations, not `export const x = ui.toggle`. Both work
+// under ES modules, but build.py flattens the frontend into one classic script
+// for the single-file build, where a top-level `const` becomes a lexical global
+// (reachable from inline handlers, but NOT a window property) while a function
+// declaration becomes both. Keeping these as declarations means window.X
+// resolves identically in the split build and the flattened one.
+export function toggleLocalSource()          { return _readerLocalSource.toggle(); }
+export function triggerLocalFolderPicker()   { return _readerLocalSource.pickFolder(); }
+export function triggerLocalCbzPicker()      { return _readerLocalSource.pickCbz(); }
+export function handleLocalFolderInput(ev)   { return _readerLocalSource.onFolderInput(ev); }
+export function handleLocalCbzInput(ev)      { return _readerLocalSource.onCbzInput(ev); }

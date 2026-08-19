@@ -38,7 +38,7 @@ import {
   setNextChapterId,
   setPrevChapterId,
 } from './state-and-constants.js';
-import { chapterFromSuwayomi } from './suwayomi-api.js';
+import { makeSuwayomiSourceUI } from './chapter-source.js';
 import { getModelInfo, getTargetLang, translateBatch } from './translate-client.js';
 import {
   _clearChapterState,
@@ -663,26 +663,22 @@ export async function startPipelineWithSuwayomiSource(chapter, targetLang) {
 // (chapterFromSuwayomi() itself lives in suwayomi-api.js, matching that
 // file's scope: fetch + normalize only, same as mangadex-api.js — no
 // UI-triggering handlers there, same split this codebase already uses.)
-export function toggleSuwayomiSource() {
-  document.getElementById('suwayomi-source-wrap')?.classList.toggle('open');
-}
+// ── Reader Suwayomi controls ─────────────────────────────────────────────────
+// Behaviour lives in makeSuwayomiSourceUI() (chapter-source.js); this screen
+// supplies the id prefix and the destination. See the matching registration in
+// erase-tool.js.
+const _readerSuwayomiSource = makeSuwayomiSourceUI({
+  idPrefix: '',
+  guard:    _validateApiKeyOrToast,
+  onChapter: (chapter) => startPipelineWithSuwayomiSource(chapter),
+});
 
-export async function loadFromSuwayomi() {
-  const mangaId      = document.getElementById('suwayomi-manga-id').value.trim();
-  const chapterIndex = document.getElementById('suwayomi-chapter-index').value.trim();
-  const sourceLang   = document.getElementById('suwayomi-source-lang').value;
-
-  if (!mangaId || !chapterIndex) {
-    toast('Enter both a Manga ID and a Chapter Index.');
-    return;
-  }
-
-  toast('Fetching from Suwayomi…', 3000);
-  try {
-    const chapter = await chapterFromSuwayomi(mangaId, chapterIndex, sourceLang);
-    startPipelineWithSuwayomiSource(chapter);
-  } catch (e) {
-    toast(e.message);
-  }
-}
+// Exported as function declarations, not `export const x = ui.toggle`. Both work
+// under ES modules, but build.py flattens the frontend into one classic script
+// for the single-file build, where a top-level `const` becomes a lexical global
+// (reachable from inline handlers, but NOT a window property) while a function
+// declaration becomes both. Keeping these as declarations means window.X
+// resolves identically in the split build and the flattened one.
+export function toggleSuwayomiSource() { return _readerSuwayomiSource.toggle(); }
+export function loadFromSuwayomi()     { return _readerSuwayomiSource.load(); }
 

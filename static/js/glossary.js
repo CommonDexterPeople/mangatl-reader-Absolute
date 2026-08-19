@@ -60,7 +60,7 @@ export function _glossaryKeyFor(mangaId, fallbackName) {
 }
 
 // Called once per chapter load (pipeline.js's _runChapterPipeline, and
-// erase-tool.js's loadEraseChapter / _loadEraseLocalChapter) with
+// erase-tool.js's loadEraseChapterFromSource) with
 // whatever {mangaId, mangaTitle} that source already has on hand — every
 // pipeline entry point already builds an object with exactly these two
 // fields (real values for MangaDex/Suwayomi, {mangaId:null, mangaTitle:

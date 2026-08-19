@@ -206,7 +206,7 @@ export function _writeChapterTotal(state) {
 
 /**
  * Called from goBack() / whenever a new chapter starts loading (pipeline.js,
- * erase-tool.js's _loadEraseLocalChapter, etc.) — resets the per-chapter
+ * erase-tool.js's loadEraseChapterFromSource, etc.) — resets the per-chapter
  * counter to zero without touching the lifetime total. Safe to call even
  * if no chapter was in progress (e.g. app just opened).
  */

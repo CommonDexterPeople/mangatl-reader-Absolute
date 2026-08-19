@@ -135,8 +135,9 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 │   ├── index.html         Page markup only
 │   ├── style.css          All styling
 │   └── js/                ES modules, one per concern: chapter pipeline,
-│                           correction UI, export, local-source handling,
-│                           MangaDex auth, etc. main.js is the entry point.
+│                           correction UI, export, MangaDex auth, etc.
+│                           main.js is the entry point; chapter-source.js
+│                           defines the Chapter shape every source produces.
 └── build.py             Reassembles everything into one distributable .py file
 ```
 
@@ -160,13 +161,25 @@ compatibility shim, not the target state: convert inline handlers to
 `addEventListener` or event delegation, then drop modules from that list as
 nothing in the markup calls into them.
 
-Two consequences worth knowing before editing `static/js/`:
+**Adding a chapter source** (a fourth alongside MangaDex, Suwayomi, and local
+folder/CBZ) means writing one loader in `chapter-source.js` that returns a
+`Chapter`, then registering it on each screen. It used to mean writing it twice —
+once for the reader and once, near-identically, for the Erase Tool. The `Chapter`
+shape is documented at the top of `chapter-source.js`; note `cacheable`, which is
+what encodes "local pages don't survive a reload" as data rather than prose.
+
+Three consequences worth knowing before editing `static/js/`:
 
 - **You can't assign to another module's binding.** Imports are read-only. Shared
   mutable state goes through setters (`setCancelled()` in
   `state-and-constants.js`), and behaviour is added to another module's function
   by subscribing to a hook it exposes (`onAfterPageRender()` in `page-render.js`),
   never by reassigning it.
+- **Prefer `export function` over `export const fn = …`.** Both work under ES
+  modules, but the single-file build flattens everything into one classic script,
+  where a top-level `const` is a lexical global (reachable from inline handlers,
+  but not a `window` property) while a function declaration is both. Declarations
+  keep `window.X` resolving identically in either build.
 - **Top-level names must stay unique across all of `static/js/`.** Modules
   themselves don't require that, but `build.py` flattens them into one scope for
   the single-file build, where a collision is a redeclaration. The build fails

@@ -106,5 +106,9 @@ export async function chapterFromSuwayomi(mangaId, chapterIndex, sourceLang) {
     // able to collide if a MangaDex mangaId ever looked numeric.
     mangaId:    `suwayomi:${mangaId}`,
     pages,
+    // Unlike a local folder/CBZ, these pages are real re-fetchable URLs
+    // against the user's own server, so a cache entry stays valid across a
+    // reload. See the Chapter shape in chapter-source.js.
+    cacheable:  true,
   };
 }

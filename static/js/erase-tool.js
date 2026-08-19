@@ -24,19 +24,13 @@
 
 // _eraseBoxes: [{id, box:[x1,y1,x2,y2] (0-100 pct), tl:string, outside:bool, matched:bool}]
 import { createBoxOverlay } from './box-overlay.js';
+import { chapterFromMangaDex, makeLocalSourceUI, makeSuwayomiSourceUI } from './chapter-source.js';
 import { getCachedChapter, getEffectivePageRegions } from './cache.js';
 import { recordUsage } from './cost-tracker.js';
 import { _sanitizeForFilename, _showDownloadGuide } from './export.js';
 import { setActiveGlossary } from './glossary.js';
-import {
-  _localBlobStore,
-  chapterFromCbz,
-  chapterFromFileList,
-  clearLocalBlobStore,
-  imageRefBody,
-  isLocalRef,
-} from './local-source.js';
-import { fetchChapterMeta, fetchPageUrls, parseChapterId } from './mangadex-api.js';
+import { _localBlobStore, clearLocalBlobStore, imageRefBody, isLocalRef } from './local-source.js';
+import { parseChapterId } from './mangadex-api.js';
 import { _pageStore } from './ocr-client.js';
 import {
   getFinalErasedBlob,
@@ -47,7 +41,6 @@ import {
   teardownPaintBrush,
   toggleBrushMode,
 } from './paint-brush.js';
-import { chapterFromSuwayomi } from './suwayomi-api.js';
 import { getModelId, getModelInfo, getTargetLang, translateBatch } from './translate-client.js';
 import { esc, getAiInpaintSetting, show, toast } from './utils.js';
 import { buildZip } from './zip-writer.js';
@@ -69,7 +62,7 @@ export let _eraseVisionDrawOn = false; // true while newly-drawn boxes should be
 // (via eraseSaveToBatch) from the currently loaded chapter/local source,
 // waiting to be zipped together by eraseDownloadBatchZip(). Scoped to
 // "whatever's currently loaded" — loading a different chapter/URL/local
-// folder starts a fresh batch (see loadEraseChapter / _loadEraseLocalChapter)
+// folder starts a fresh batch (see loadEraseChapterFromSource)
 // rather than silently mixing pages from two different sources into one zip.
 export let _eraseBatch = new Map();
 
@@ -135,47 +128,6 @@ export function _eraseSyncAiInpaintToggle() {
 export let _erasePageList = [];   // [{cdn, img}] for the currently loaded chapter
 export let _erasePageIdx = 0;
 
-export async function loadEraseChapter() {
-  const rawUrl = document.getElementById('erase-url').value.trim();
-  if (!rawUrl) { toast('Paste a MangaDex chapter URL.'); return; }
-  const chapterId = parseChapterId(rawUrl);
-  if (!chapterId) { toast("Could not find a chapter ID in that URL."); return; }
-
-  const wrap = document.getElementById('erase-canvas-wrap');
-  wrap.innerHTML = '<div class="erase-loading"><span class="spinner"></span> Loading page…</div>';
-
-  try {
-    // Fetch page list + chapter meta together — meta gives us
-    // translatedLanguage, needed for OCR-crop/vision-crop/translate calls.
-    // A meta fetch failure is non-fatal here (falls back to 'en', same as
-    // _findMatchingTranslation's callers tolerate elsewhere) since the tool
-    // is still fully usable without it for manual-only boxes.
-    const [pages, meta] = await Promise.all([
-      fetchPageUrls(chapterId, 'data'),
-      fetchChapterMeta(chapterId).catch(() => null),
-    ]);
-    _erasePageList = pages;
-    if (!_erasePageList.length) throw new Error('No pages found for this chapter.');
-    _erasePageIdx = 0;
-    _eraseChapterId  = chapterId;
-    _eraseSourceLang = meta?.translatedLanguage || 'en';
-    // Same resolution pipeline.js's _runChapterPipeline uses — see
-    // glossary.js's file header. meta can be null here (fetch failure is
-    // tolerated, see comment above) so fall back to the raw chapterId as
-    // a display name rather than passing undefined through.
-    setActiveGlossary(meta?.mangaId || null, meta?.mangaTitle || chapterId);
-    // Fresh chapter — start a fresh batch rather than mixing pages from a
-    // previously loaded chapter/local source into the same zip, and drop
-    // any local blobs that source was holding (see local-source.js).
-    _eraseBatch = new Map();
-    _renderEraseBatchPanel();
-    clearLocalBlobStore();
-    await _loadEraseCurrentPage();
-  } catch (err) {
-    wrap.innerHTML = `<div class="erase-empty-hint">Failed to load: ${esc(err.message || err)}</div>`;
-  }
-}
-
 export let _eraseChapterId = null;
 
 export async function _loadEraseCurrentPage() {
@@ -208,124 +160,90 @@ export async function _loadEraseCurrentPage() {
   _updateErasePendingButton();
 }
 
-// ── Local Folder / CBZ input ─────────────────────────────────────
-// Counterpart to the MangaDex loadEraseChapter() above, built from the same
-// local-source.js building blocks the main reader uses (chapterFromFileList /
-// chapterFromCbz / imageRefBody) — see that file's header for the {cdn, img}
-// page shape and imageRefBody()'s url-vs-image_b64 split. No API key or
-// network call needed just to load a folder/CBZ; a key is only required once
-// ✦ VISION draw or ↺ translate pending actually calls out.
-export function toggleEraseLocalSource() {
-  document.getElementById('erase-local-source-wrap')?.classList.toggle('open');
-}
-
-export function _eraseLocalSourceLang() {
-  return document.getElementById('erase-local-source-lang')?.value || 'ja';
-}
-
-export function triggerEraseLocalFolderPicker() { document.getElementById('erase-local-folder-input')?.click(); }
-export function triggerEraseLocalCbzPicker()    { document.getElementById('erase-local-cbz-input')?.click(); }
-
-export async function handleEraseLocalFolderInput(event) {
-  const files = event.target.files;
-  event.target.value = ''; // allow picking the same folder again later
-  if (!files || !files.length) return;
-  try {
-    toast('Reading folder…', 3000);
-    const chapter = await chapterFromFileList(files, _eraseLocalSourceLang());
-    _loadEraseLocalChapter(chapter); // registers/swaps in blobs, drops the previous chapter's
-  } catch (e) {
-    toast(`Couldn't read that folder: ${e.message}`);
-  }
-}
-
-export async function handleEraseLocalCbzInput(event) {
-  const file = event.target.files?.[0];
-  event.target.value = '';
-  if (!file) return;
-  try {
-    toast('Unpacking .cbz…', 3000);
-    const chapter = await chapterFromCbz(file, _eraseLocalSourceLang());
-    _loadEraseLocalChapter(chapter); // registers/swaps in blobs, drops the previous chapter's
-  } catch (e) {
-    toast(`Couldn't read that file: ${e.message}`);
-  }
-}
-
 /**
- * Populates the same _erasePageList/_erasePageIdx/_eraseChapterId/
- * _eraseSourceLang state loadEraseChapter() does, from a local chapter
- * object instead of a MangaDex fetch, then renders page 1 through the same
- * _loadEraseCurrentPage() every other load path uses — nothing downstream
- * needs to know or care which kind of chapter this is.
+ * Load any Chapter into the Erase Tool, whatever produced it.
  *
- * chapter.pages' blobs are ALREADY registered in _localBlobStore by the time
- * this runs (chapterFromFileList/chapterFromCbz did that) — so cleanup here
- * only ever targets the *previous* _erasePageList's local-blob refs, deleted
- * by id rather than a blanket clearLocalBlobStore(). That matters two ways:
- * a failed folder/CBZ pick (which never reaches this function) can't
- * retroactively break a still-good previously loaded chapter, and a
- * successful one can't accidentally delete the blobs it just registered.
+ * This is the single entry point for all three sources now. It used to be
+ * three: loadEraseChapter() assembled a MangaDex chapter inline (duplicating
+ * pipeline.js), _loadEraseLocalChapter() handled folder/CBZ, and
+ * loadEraseFromSuwayomi() was a copy of the reader's Suwayomi loader ending in
+ * a different call. They only ever differed in how the pages were obtained —
+ * which is exactly what the Chapter shape (see chapter-source.js) abstracts.
  */
-export function _loadEraseLocalChapter(chapter) {
-  if (!chapter.pages.length) { toast('No pages found.'); return; }
+export function loadEraseChapterFromSource(chapter) {
+  if (!chapter.pages.length) { toast('No pages found.'); return Promise.resolve(); }
+
+  // Drop blobs the outgoing chapter was holding. Only local sources register
+  // any; isLocalRef() makes this a no-op for MangaDex/Suwayomi rather than
+  // something each caller has to know whether to do.
   for (const p of _erasePageList) {
     if (isLocalRef(p.cdn)) _localBlobStore.delete(p.cdn);
   }
-  _eraseBatch = new Map(); // fresh source — don't mix pages from two chapters into one zip
+
+  // Fresh source — don't mix pages from two chapters into one zip.
+  _eraseBatch = new Map();
   _renderEraseBatchPanel();
+
   _erasePageList   = chapter.pages;
   _erasePageIdx    = 0;
   _eraseChapterId  = chapter.id;
   _eraseSourceLang = chapter.sourceLang;
-  // chapterFromFileList/chapterFromCbz return {id, kind, title, ...} with
-  // no mangaId (genuinely no stable series ID for a local folder/CBZ);
-  // chapterFromSuwayomi DOES carry one (chapter.mangaId, its own internal
-  // manga id) — see suwayomi-api.js — so a Suwayomi series gets a real
-  // id-keyed glossary here, same as MangaDex, while local/CBZ falls back
-  // to the name-keyed path. See glossary.js's file header for the split.
+
+  // Same glossary resolution pipeline.js's _runChapterPipeline uses — see
+  // glossary.js's file header. mangaId is null for local folder/CBZ (no stable
+  // series identity), which falls back to the name-keyed path.
   setActiveGlossary(chapter.mangaId || null, chapter.title || chapter.id);
-  document.getElementById('erase-url').value = ''; // loaded locally, not by chapter URL
-  _loadEraseCurrentPage();
-  toast(`Loaded ${_erasePageList.length} page${_erasePageList.length !== 1 ? 's' : ''} from ${chapter.kind === 'cbz' ? '.cbz' : 'folder'}.`);
+
+  // Only a URL-loaded chapter should leave the URL box populated.
+  if (chapter.kind !== 'mangadex') document.getElementById('erase-url').value = '';
+
+  return _loadEraseCurrentPage();
 }
 
-// ── Suwayomi (self-hosted) input ─────────────────────────────────
-// Third chapter source for the Erase Tool, alongside MangaDex (loadEraseChapter)
-// and Local Folder/CBZ (above). chapterFromSuwayomi() (suwayomi-api.js) already
-// returns the same {id, kind, title, sourceLang, pages: [{cdn, img}]} shape
-// chapterFromFileList()/chapterFromCbz() do, and _loadEraseLocalChapter() was
-// written generically against that shape from the start — so, same as
-// pipeline.js's startPipelineWithSuwayomiSource() needed no changes to
-// page-render.js/export.js to support a third source, this needs no changes
-// to _loadEraseLocalChapter() either. Mirrors pipeline.js's
-// toggleSuwayomiSource()/loadFromSuwayomi() one-for-one; kept as separate
-// erase-* element ids/functions since the Erase Tool and main reader are two
-// independent screens with their own home-screen-style collapsible sections,
-// same reason erase-local-source-lang exists alongside the main reader's own
-// local-source-lang instead of sharing one.
-export function toggleEraseSuwayomiSource() {
-  document.getElementById('erase-suwayomi-source-wrap')?.classList.toggle('open');
-}
+/** MangaDex: read the chapter URL out of the input, then load it. */
+export async function loadEraseChapter() {
+  const rawUrl = document.getElementById('erase-url').value.trim();
+  if (!rawUrl) { toast('Paste a MangaDex chapter URL.'); return; }
+  const chapterId = parseChapterId(rawUrl);
+  if (!chapterId) { toast("Could not find a chapter ID in that URL."); return; }
 
-export async function loadEraseFromSuwayomi() {
-  const mangaId      = document.getElementById('erase-suwayomi-manga-id').value.trim();
-  const chapterIndex = document.getElementById('erase-suwayomi-chapter-index').value.trim();
-  const sourceLang   = document.getElementById('erase-suwayomi-source-lang').value;
+  const wrap = document.getElementById('erase-canvas-wrap');
+  wrap.innerHTML = '<div class="erase-loading"><span class="spinner"></span> Loading page…</div>';
 
-  if (!mangaId || !chapterIndex) {
-    toast('Enter both a Manga ID and a Chapter Index.');
-    return;
-  }
-
-  toast('Fetching from Suwayomi…', 3000);
   try {
-    const chapter = await chapterFromSuwayomi(mangaId, chapterIndex, sourceLang);
-    _loadEraseLocalChapter(chapter);
-  } catch (e) {
-    toast(e.message);
+    clearLocalBlobStore();
+    await loadEraseChapterFromSource(await chapterFromMangaDex(chapterId, 'data'));
+  } catch (err) {
+    wrap.innerHTML = `<div class="erase-empty-hint">Failed to load: ${esc(err.message || err)}</div>`;
   }
 }
+
+// ── Erase Tool source controls ───────────────────────────────────────────────
+// The 'erase-' prefixed twins of the reader's controls in local-source.js and
+// pipeline.js. Same factories, different prefix and destination — and no API
+// key guard, because erasing text needs no translation key.
+const _eraseLocalSource = makeLocalSourceUI({
+  idPrefix: 'erase-',
+  onChapter: loadEraseChapterFromSource,
+});
+const _eraseSuwayomiSource = makeSuwayomiSourceUI({
+  idPrefix: 'erase-',
+  onChapter: loadEraseChapterFromSource,
+});
+
+// Exported as function declarations, not `export const x = ui.toggle`. Both work
+// under ES modules, but build.py flattens the frontend into one classic script
+// for the single-file build, where a top-level `const` becomes a lexical global
+// (reachable from inline handlers, but NOT a window property) while a function
+// declaration becomes both. Keeping these as declarations means window.X
+// resolves identically in the split build and the flattened one.
+export function toggleEraseLocalSource()        { return _eraseLocalSource.toggle(); }
+export function triggerEraseLocalFolderPicker() { return _eraseLocalSource.pickFolder(); }
+export function triggerEraseLocalCbzPicker()    { return _eraseLocalSource.pickCbz(); }
+export function handleEraseLocalFolderInput(ev) { return _eraseLocalSource.onFolderInput(ev); }
+export function handleEraseLocalCbzInput(ev)    { return _eraseLocalSource.onCbzInput(ev); }
+export function toggleEraseSuwayomiSource()     { return _eraseSuwayomiSource.toggle(); }
+export function loadEraseFromSuwayomi()         { return _eraseSuwayomiSource.load(); }
 
 export function _populateFontDropdown() {
   const sel = document.getElementById('erase-default-font');

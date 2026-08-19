@@ -32,6 +32,7 @@ import * as ns_history from './history.js';
 import * as ns_cost_tracker from './cost-tracker.js';
 import * as ns_mangadex_api from './mangadex-api.js';
 import * as ns_suwayomi_api from './suwayomi-api.js';
+import * as ns_chapter_source from './chapter-source.js';
 import * as ns_local_source from './local-source.js';
 import * as ns_ocr_client from './ocr-client.js';
 import * as ns_mangadex_auth from './mangadex-auth.js';
@@ -67,10 +68,20 @@ import { toast } from './utils.js';
 // first time someone adds a handler and forgets to register it, and the failure
 // only shows up as a dead button in the UI.
 //
-// To shrink this: convert inline onclick="…" attributes to addEventListener or
-// event delegation, then drop the module from this list once nothing in the
-// markup calls into it. Until then, every export stays reachable — which is the
-// same reachability the old setup had, just declared in one visible place.
+// CAVEAT — this copies VALUES, not live bindings. A function export never
+// changes identity, so handlers are safe; but a mutable `export let` (there are
+// 64 of them) is snapshotted here at load time, and window.thatName will not
+// track later reassignment. Module-to-module code is unaffected: real imports
+// are live bindings and always see the current value. It only bites if an
+// inline handler READS a mutable name instead of calling a function. Nothing in
+// the markup does that today (checked), so keep it that way — if a handler ever
+// needs mutable state, call a function that returns it rather than reading the
+// variable through window.
+//
+// To shrink this: convert inline onclick handlers to addEventListener or event
+// delegation, then drop the module from this list once nothing in the markup
+// calls into it. Until then every export stays reachable — the same reachability
+// the old <script> tags gave, just declared in one visible place.
 Object.assign(
   window,
   ns_state_and_constants,
@@ -81,6 +92,7 @@ Object.assign(
   ns_cost_tracker,
   ns_mangadex_api,
   ns_suwayomi_api,
+  ns_chapter_source,
   ns_local_source,
   ns_ocr_client,
   ns_mangadex_auth,
