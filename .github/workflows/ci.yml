@@ -83,9 +83,6 @@ jobs:
       - name: Adjacent container gap tests (test_adjacent_container_gap.py)
         run: python3 test_adjacent_container_gap.py
 
-      - name: Hybrid detection tests (test_hybrid_detection.py)
-        run: python3 test_hybrid_detection.py
-
       - name: innerHTML escaping audit (informational — does not fail the build)
         run: python3 audit_innerhtml.py
 

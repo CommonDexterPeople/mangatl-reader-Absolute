@@ -3142,9 +3142,8 @@ def _prepare_page_for_detection(image_bytes: bytes):
     This prologue is identical for every local engine — _run_easyocr_detection
     and _run_rapidocr_detection each had their own copy (the RapidOCR one's
     comment even said "byte-for-byte identical to _run_easyocr_detection's"),
-    and _run_hybrid_detection would have made a third. Factored out so there
-    is one copy, and the engines differ only where they actually differ:
-    which recogniser reads the preprocessed array.
+    Factored out so there is one copy, and the engines differ only where they
+    actually differ: which recogniser reads the preprocessed array.
 
     Returns (arr_pre, arr_raw, w, h, gray_orig, h_borders, v_borders,
     bubble_label_map). arr_raw is the UNpreprocessed array, which both
@@ -3320,7 +3319,7 @@ def _run_easyocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
     This is the box-DETECTION half of OCR: panel-border detection, CLAHE
     preprocessing, EasyOCR, then bubble merging. The shared stages live in
     _prepare_page_for_detection / _finish_local_detection so this function,
-    _run_rapidocr_detection and _run_hybrid_detection cannot drift apart.
+    and _run_rapidocr_detection cannot drift apart.
 
     Returns:
         regions       — merged bubble regions, each with text/cx/cy/box/…
@@ -3347,9 +3346,10 @@ def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
     single unified character set rather than being bound to the chapter's
     declared language — see _get_rapidocr_engine's docstring.
 
-    KNOWN WEAKNESS: RapidOCR drops most Vietnamese tone marks. That is what
-    _run_hybrid_detection exists to correct; see its docstring for measured
-    numbers.
+    KNOWN WEAKNESS: RapidOCR drops most Vietnamese tone marks — measured at
+    8.0% marked characters against a hand-read 23.2% on a real page. See
+    KNOWN_ISSUES_DRAFT.md's hybrid-detection entry for the full numbers and
+    for why the two-engine fix built against them was not kept.
     """
     arr_pre, arr_raw, w, h, gray_orig, h_borders, v_borders, bubble_label_map = \
         _prepare_page_for_detection(image_bytes)
@@ -3357,158 +3357,6 @@ def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
     return _finish_local_detection(boxes, confidences, lang, w, h,
                                     h_borders, v_borders, bubble_label_map,
                                     gray_orig, margin_scale)
-
-
-_HYBRID_MIN_IOU = 0.30
-# Minimum box overlap for two engines' fragments to be considered the same
-# physical line. Deliberately loose: the two detectors crop differently
-# (RapidOCR's DBNet boxes tend to hug glyphs tighter than EasyOCR's CRAFT
-# boxes), so demanding a high IoU would reject genuine pairs. Measured on the
-# three Vietnamese sample pages this matched 84-92% of RapidOCR's fragments,
-# and the misses were fragments one engine found and the other did not find
-# at all — not mispairs.
-
-
-def _match_fragments_spatially(boxes_a: list, boxes_b: list,
-                                min_iou: float = _HYBRID_MIN_IOU) -> dict:
-    """Greedy 1:1 pairing of two engines' fragment boxes by IoU.
-
-    SPATIAL, not textual, and that distinction is the whole point. The
-    existing _match_vision_to_easyocr pairs by fuzzy TEXT similarity because
-    Gemini Vision has no detection step — there are no boxes to compare, so
-    text is the only signal it has. Here both inputs come from real detection
-    models, and matching by text would be circular: the reason this function
-    exists is that one engine's text is corrupted, so using that corrupted
-    text to decide what it corresponds to assumes the answer. Box overlap is
-    independent of the recognition error being corrected.
-
-    Returns {index_in_a: (index_in_b, iou)} for matched pairs only.
-    """
-    def _iou(a, b):
-        x1, y1 = max(a[0], b[0]), max(a[1], b[1])
-        x2, y2 = min(a[2], b[2]), min(a[3], b[3])
-        if x2 <= x1 or y2 <= y1:
-            return 0.0
-        inter  = (x2 - x1) * (y2 - y1)
-        area_a = (a[2] - a[0]) * (a[3] - a[1])
-        area_b = (b[2] - b[0]) * (b[3] - b[1])
-        union  = area_a + area_b - inter
-        return inter / union if union > 0 else 0.0
-
-    scored = []
-    for i, a in enumerate(boxes_a):
-        for j, b in enumerate(boxes_b):
-            v = _iou(a, b)
-            if v >= min_iou:
-                scored.append((v, i, j))
-    scored.sort(key=lambda t: -t[0])
-
-    used_a, used_b, matched = set(), set(), {}
-    for v, i, j in scored:
-        if i in used_a or j in used_b:
-            continue
-        used_a.add(i)
-        used_b.add(j)
-        matched[i] = (j, v)
-    return matched
-
-
-# Languages where running BOTH local engines and reconciling them measurably
-# beats either alone. Keyed to real measurements, not a general "more is
-# better" assumption — see _run_hybrid_detection's docstring for the numbers,
-# and for why 'ko' is handled separately rather than listed here.
-_HYBRID_LANGS = {"vi"}
-
-
-def _run_hybrid_detection(image_bytes: bytes, lang: str, margin_scale: float):
-    """Run both local engines and reconcile them, for languages where that
-    measurably beats either alone. Same return contract as
-    _run_easyocr_detection / _run_rapidocr_detection, so /ocr dispatches to it
-    as a third local_engine option with no other route change.
-
-    WHAT IT COMBINES, AND WHY THAT SPLIT. RapidOCR supplies the boxes, and
-    therefore the region GROUPING; EasyOCR supplies the TEXT for every
-    fragment the two engines agree is the same line. Measured on
-    'Vietnam page.png' against hand-read ground truth:
-
-        variant                            mean similarity   diacritic density
-        RapidOCR only                            0.789              8.0%
-        EasyOCR only                             0.759             15.7%
-        hybrid (this function)                   0.835             14.2%
-        (ground truth)                           1.000             23.2%
-
-    RapidOCR drops roughly two thirds of Vietnamese tone marks — real example
-    from that page, 'LAN DUY NHAT TOI TUNG CHONG DOI BO ME' (correctly
-    accented in the source) came back as 'LAN DUY NHAT TOI TUNG CHONG DI B
-    ME' with most marks gone — which is why its text is not trusted here.
-    EasyOCR keeps far more of them but groups worse: on that page it split
-    one caption across two regions, which is what drags its region-level
-    score BELOW RapidOCR's despite reading the characters better. Taking
-    boxes from one and text from the other beats both, and the same diacritic
-    gain reproduced on the other two sample pages (7.9% -> 13.2%, 10.3% ->
-    17.7%).
-
-    WHY LANGUAGE-GATED, NOT A CONFIDENCE CASCADE. The obvious design — run
-    the cheap engine, escalate only when its confidence is low — cannot work
-    for this failure mode: RapidOCR's diacritic loss is CONFIDENT and wrong,
-    so a confidence threshold lets exactly the bug this exists to catch pass
-    straight through. Gating on _HYBRID_LANGS puts the decision on "this
-    engine has been measured wrong for this language" instead of a per-box
-    score that does not encode the error.
-
-    WHY NOT FOR EVERY LANGUAGE. A second full-page inference pass is real
-    cost on the low-end hardware this targets, and for some languages the
-    trade runs the other way — on the Spanish sample pages EasyOCR's text is
-    visibly worse ('vesgarravora' for 'desgarradora', 'Columpianvo' for
-    'columpiando'), so adopting it would degrade those pages. Languages
-    outside _HYBRID_LANGS fall through to a single engine at today's cost.
-
-    NOT VALIDATED: only Vietnamese has been measured. Adding a language here
-    without the same before/after on real pages is exactly the guess this
-    docstring's numbers exist to replace.
-    """
-    # Korean: RapidOCR's bundled model has no Korean coverage at all — on a
-    # real Korean page it returns CJK garbage ('0L...', a stray kanji, 'HK'),
-    # not merely less accurate text. There is nothing for a merge to
-    # reconcile, so route to EasyOCR alone. This is the hard rule
-    # _LOCAL_ENGINE_RECOMMENDATION's 'ko' entry already states.
-    if lang == "ko":
-        return _run_easyocr_detection(image_bytes, lang, margin_scale)
-
-    if lang not in _HYBRID_LANGS:
-        return _run_rapidocr_detection(image_bytes, lang, margin_scale)
-
-    arr_pre, arr_raw, w, h, gray_orig, h_borders, v_borders, bubble_label_map = \
-        _prepare_page_for_detection(image_bytes)
-
-    # Both engines read the SAME preprocessed array, so any box difference is
-    # the detectors disagreeing rather than one of them seeing another image.
-    rapid_boxes, rapid_confs = _rapidocr_fragment_boxes(arr_pre, arr_raw, lang)
-    easy_boxes,  _easy_confs = _easyocr_fragment_boxes(arr_pre, arr_raw, lang)
-
-    matched = _match_fragments_spatially(rapid_boxes, easy_boxes)
-
-    # Adopt EasyOCR's text onto RapidOCR's box wherever the two agree on the
-    # line. Confidences stay RapidOCR's: they are what this box list's merge
-    # step will filter on, and the two engines' scores are not on a
-    # comparable scale — _MIN_CONF_MAP's thresholds are documented as
-    # verified against EasyOCR output specifically, so mixing in EasyOCR
-    # confidences for some boxes and not others would make that filter
-    # inconsistent across the page.
-    replaced = 0
-    for i, (j, _iou_val) in matched.items():
-        new_text = easy_boxes[j][4]
-        if new_text and new_text != rapid_boxes[i][4]:
-            rapid_boxes[i] = rapid_boxes[i][:4] + (new_text,)
-            replaced += 1
-    print(f"  [OCR] hybrid({lang}): {len(matched)}/{len(rapid_boxes)} fragments "
-          f"matched spatially, {replaced} texts taken from EasyOCR")
-
-    return _finish_local_detection(rapid_boxes, rapid_confs, lang, w, h,
-                                    h_borders, v_borders, bubble_label_map,
-                                    gray_orig, margin_scale)
-
-
 def _recommend_local_engine(lang: str, current: str):
     """
     Returns (recommended_engine, reason) if there's a real recommendation
@@ -4537,7 +4385,7 @@ def ocr_recommendation():
     """
     lang         = request.args.get("lang", "en").lower()
     local_engine = request.args.get("local_engine", "easyocr").strip().lower()
-    if local_engine not in ("easyocr", "rapidocr", "hybrid"):
+    if local_engine not in ("easyocr", "rapidocr"):
         local_engine = "easyocr"   # unrecognised value — fail safe to the default, not a 500
     return jsonify({"local_engine_recommendation": _recommend_local_engine(lang, local_engine)})
 
@@ -4600,19 +4448,12 @@ def ocr_page():
     ai_key       = body.get("ai_key",       "").strip()
     ai_model     = body.get("ai_model",     "gemini-2.5-flash").strip()
     vision_mode  = body.get("vision_mode",  "smart").strip().lower()  # 'smart' | 'all' | 'off'
-    # 'easyocr' | 'rapidocr' | 'hybrid'
-    local_engine = body.get("local_engine", "easyocr").strip().lower()
-    if local_engine not in ("easyocr", "rapidocr", "hybrid"):
+    local_engine = body.get("local_engine", "easyocr").strip().lower()  # 'easyocr' | 'rapidocr'
+    if local_engine not in ("easyocr", "rapidocr"):
         local_engine = "easyocr"   # unrecognised value — fail safe to the default, not a 500
-    _run_local_detection = {
-        "rapidocr": _run_rapidocr_detection,
-        # 'hybrid' runs both engines and reconciles them, but ONLY for the
-        # languages in _HYBRID_LANGS — for anything else it falls through to
-        # a single engine internally, so selecting it never silently doubles
-        # inference cost on a language it can't help. See
-        # _run_hybrid_detection's docstring.
-        "hybrid":   _run_hybrid_detection,
-    }.get(local_engine, _run_easyocr_detection)
+    _run_local_detection = (
+        _run_rapidocr_detection if local_engine == "rapidocr" else _run_easyocr_detection
+    )
     # Surfaced to the frontend regardless of which branch below actually
     # runs, so the recommendation banner can appear even on a page that
     # ends up using Vision (the user may still want to know for next time
