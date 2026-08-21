@@ -173,6 +173,7 @@ from mtl.merge import (
     _merge_bubble_regions,
     assemble_region,
     boxes_overlap,
+    cluster_into_lines,
     compute_merge_margins,
     detect_column_split,
     expand_box,
