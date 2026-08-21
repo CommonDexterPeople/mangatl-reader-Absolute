@@ -113,6 +113,7 @@ import base64
 import os
 import platform
 import socket
+import hashlib
 import threading
 import time
 import webbrowser
@@ -3357,6 +3358,44 @@ def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
     return _finish_local_detection(boxes, confidences, lang, w, h,
                                     h_borders, v_borders, bubble_label_map,
                                     gray_orig, margin_scale)
+# Provisional per-language local-engine guidance — NOT a hard routing rule.
+# Based on one real manga page per language (es/pt/vi/tr), tested manually
+# in one session — see Devlog "RapidOCR: second local OCR engine" for the
+# actual transcriptions this is based on. This is a starting point to
+# surface as a *suggestion* the user can accept or dismiss (see
+# _recommend_local_engine below and the frontend banner it powers), not a
+# conclusion strong enough to hard-code as automatic routing the way
+# VISION_LANGS is. Replace this dict's contents once the planned eval
+# script (run across a real folder of sample pages per language, not one
+# page each) produces real accept/drop/accuracy numbers — see Devlog.
+_LOCAL_ENGINE_RECOMMENDATION = {
+    # lang: (recommended_engine, one-line reason shown in the UI banner)
+    'vi': ('easyocr',  "RapidOCR tends to drop or swap Vietnamese tone marks "
+                        "on stacked diacritics; EasyOCR is more reliable here."),
+    'pt': ('rapidocr', "RapidOCR was more accurate and complete on Portuguese "
+                        "in our testing; EasyOCR's own confidence filter "
+                        "dropped some correctly-read lines."),
+    'ko': ('easyocr',  "RapidOCR's bundled model doesn't cover Korean at all "
+                        "(unlike Vietnamese, this isn't an accuracy gap — it's "
+                        "no coverage) and returns unusable output. This is a "
+                        "harder rule than the others: Korean already routes to "
+                        "Vision by default (see VISION_LANGS), but if Vision "
+                        "ever falls back, the local fallback must be EasyOCR."),
+    # id: RapidOCR read a real Indonesian page cleanly (correct on 'AKU',
+    # 'KALAU', 'ITU', 'NUANSA'); EasyOCR on the same page introduced a
+    # systematic U-misread-as-L/V across most of those same words, but
+    # separately got 2-3 isolated harder words right that RapidOCR
+    # scrambled ('HOBI', 'kece-plosan'). Leaning RapidOCR but not codified
+    # as a recommendation yet — one page isn't enough to call this the way
+    # Korean's near-total failure was an obvious call. Worth another page
+    # or two before adding an entry here.
+    #
+    # es, tr, and everything else not listed: too close to call on the
+    # sample tested so far — no recommendation is surfaced (see
+    # _recommend_local_engine).
+}
+
+
 def _recommend_local_engine(lang: str, current: str):
     """
     Returns (recommended_engine, reason) if there's a real recommendation
@@ -4562,6 +4601,132 @@ def ocr_page():
         **({"local_engine_recommendation":
             {"engine": engine_recommendation[0], "reason": engine_recommendation[1]}}
            if engine_recommendation else {}),
+    })
+
+
+# ─── Merge-sensitivity preview ───────────────────────────────────────────────
+# Re-grouping already-detected fragments at a different Bubble Merge
+# Sensitivity costs ~20ms; the OCR that produced those fragments cost ~22s on
+# the same page. That 1100x gap is what makes a live preview practical: the
+# client already holds each page's raw fragment boxes (rawBoxes in
+# _pageStore), so tuning the slider needs no recogniser pass at all — only the
+# geometry step, plus the panel/bubble CV prep the merge vetoes depend on.
+#
+# That prep (_find_panel_borders + _find_bubble_components) is ~230ms, which
+# WOULD be felt while dragging a slider, so it is cached for the most recently
+# previewed image. One entry, not an LRU: tuning happens on one page at a
+# time, and the label map for a large page is ~10MB — worth holding once, not
+# four times, on the low-end hardware this app targets.
+_merge_preview_cache = {"key": None, "value": None}
+_merge_preview_lock  = threading.Lock()
+
+
+def _merge_preview_prep(image_bytes: bytes):
+    """(gray, label_map, h_borders, v_borders, w, h) for an image, cached.
+
+    Keyed by a hash of the image bytes rather than by URL: the same page can
+    arrive as a CDN url, a proxied url, or inline base64 (local folder/CBZ),
+    and all three should share one cache entry.
+    """
+    key = hashlib.sha256(image_bytes).hexdigest()
+    with _merge_preview_lock:
+        if _merge_preview_cache["key"] == key:
+            return _merge_preview_cache["value"]
+
+    try:
+        pil  = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        w, h = pil.size
+        arr  = np.array(pil)
+    except Exception as e:
+        abort(422, f"Image decode error: {e}")
+
+    gray                 = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    h_borders, v_borders = _find_panel_borders(gray, w, h)
+    label_map            = _find_bubble_components(gray, w, h)
+    value = (gray, label_map, h_borders, v_borders, w, h)
+
+    with _merge_preview_lock:
+        _merge_preview_cache["key"]   = key
+        _merge_preview_cache["value"] = value
+    return value
+
+
+@app.route("/merge-preview", methods=["POST"])
+def merge_preview():
+    """
+    Re-group a page's ALREADY-DETECTED fragments at a given merge sensitivity,
+    so the frontend can show what a slider value does to a real page live.
+
+    Body: { "url" | "image_b64":  the page image (same contract as /ocr),
+            "raw_boxes":     [{"px": [x1,y1,x2,y2], "text": "…"}, …]
+                             — the page's own fragments, which the client
+                             already has from the original /ocr response
+            "margin_scale":  float, the sensitivity being previewed }
+
+    Response: { "regions": [{text, cx, cy, box, raw_box_ids}, …],
+                "count": N, "fragment_count": M }
+
+    Deliberately does NOT run OCR or translation. It exists so the user can
+    answer "what does this slider do to MY manga" without paying ~22s per
+    adjustment, and without spending translation quota to find out. Region
+    text is the concatenation the merge produces, which is what makes an
+    over-merge visible (two bubbles' lines interleaved in one region).
+    """
+    body = request.get_json(silent=True) or {}
+
+    try:
+        margin_scale = float(body.get("margin_scale", 0.5))
+    except (TypeError, ValueError):
+        abort(400, "margin_scale must be a number")
+    # Same range the UI slider offers. Clamped rather than rejected so a
+    # stale client can't 400 the whole panel over a rounding difference.
+    margin_scale = max(0.1, min(1.5, margin_scale))
+
+    raw_boxes = body.get("raw_boxes")
+    if not isinstance(raw_boxes, list) or not raw_boxes:
+        abort(400, "raw_boxes must be a non-empty list — "
+                   "re-run OCR for this page first")
+    if len(raw_boxes) > 2000:
+        abort(413, f"Too many fragments ({len(raw_boxes)}) for a preview")
+
+    image_bytes = _load_image_bytes(body)
+    gray, label_map, h_borders, v_borders, w, h = _merge_preview_prep(image_bytes)
+
+    boxes = []
+    for rb in raw_boxes:
+        px = (rb or {}).get("px")
+        if not (isinstance(px, list) and len(px) == 4):
+            continue
+        try:
+            x1, y1, x2, y2 = (int(px[0]), int(px[1]), int(px[2]), int(px[3]))
+        except (TypeError, ValueError):
+            continue
+        boxes.append((x1, y1, x2, y2, str(rb.get("text", ""))))
+    if not boxes:
+        abort(400, "no usable fragment boxes in raw_boxes (each needs px=[x1,y1,x2,y2])")
+
+    # confidences=None / min_conf=None deliberately: the preview shows pure
+    # GROUPING at this sensitivity. Confidence filtering would drop fragments
+    # for a reason unrelated to the slider being tuned, which would make the
+    # preview misleading about what the slider itself is doing.
+    regions, group_raw_ids = _merge_bubble_regions(
+        boxes, w, h, h_borders, v_borders, margin_scale,
+        confidences=None, min_conf=None,
+        clustered_floor=SHORT_WORD_MIN_CONF,
+        bubble_label_map=label_map,
+        gray=gray,
+    )
+    for region, raw_ids in zip(regions, group_raw_ids):
+        region["raw_box_ids"] = raw_ids
+
+    return jsonify({
+        "regions": [
+            {"text": r.get("text", ""), "cx": r.get("cx"), "cy": r.get("cy"),
+             "box": r.get("box"), "raw_box_ids": r.get("raw_box_ids", [])}
+            for r in regions
+        ],
+        "count": len(regions),
+        "fragment_count": len(boxes),
     })
 
 

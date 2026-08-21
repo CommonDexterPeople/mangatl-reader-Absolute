@@ -48,6 +48,7 @@ import * as ns_downloads from './downloads.js';
 import * as ns_queue from './queue.js';
 import * as ns_paint_brush from './paint-brush.js';
 import * as ns_erase_tool from './erase-tool.js';
+import * as ns_merge_tuner from './merge-tuner.js';
 import * as ns_trans_rail from './trans-rail.js';
 
 import { refreshCacheUI } from './cache.js';
@@ -108,6 +109,7 @@ Object.assign(
   ns_queue,
   ns_paint_brush,
   ns_erase_tool,
+  ns_merge_tuner,
   ns_trans_rail,
 );
 
