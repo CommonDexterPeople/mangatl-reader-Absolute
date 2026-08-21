@@ -80,6 +80,9 @@ jobs:
       - name: Fused bubble waist tests (test_fused_bubble_waist.py)
         run: python3 test_fused_bubble_waist.py
 
+      - name: Adjacent container gap tests (test_adjacent_container_gap.py)
+        run: python3 test_adjacent_container_gap.py
+
       - name: innerHTML escaping audit (informational — does not fail the build)
         run: python3 audit_innerhtml.py
 

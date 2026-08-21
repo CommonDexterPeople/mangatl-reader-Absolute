@@ -88,6 +88,8 @@ export function _renderPageCore(el, pageIdx, total, imgSrc, regions) {
       <div class="pg-label">${pageIdx + 1} / ${total}</div>
       <div class="corner-btns-left">
         <button class="btn-correct" onclick="openCorrection(${pageIdx})" title="Correct this page">✏ CORRECT</button>
+        <button class="btn-merge-tune" onclick="openMergeTuner(${pageIdx})"
+          title="Bubbles merged wrong on this page? Preview what different Bubble Merge Sensitivity values would group, live, without re-running OCR or spending translation quota.">⚖ MERGE</button>
         <button class="btn-redo-vision" onclick="redoPageWithVision(${pageIdx})"
           title="EasyOCR wrong across the whole page? Discard every region and redo this page with Gemini Vision OCR only, then retranslate from scratch. Needs a Gemini key.">✦ Redo w/ Vision</button>
       </div>

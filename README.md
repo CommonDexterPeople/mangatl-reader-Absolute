@@ -60,6 +60,11 @@ and it hands you back the same chapter, readable in your language, in your brows
 - Chapters loaded this way are cached the same as MangaDex chapters (unlike local folder/CBZ, whose pages don't survive a reload — see above): a Suwayomi chapter's pages are real, re-fetchable URLs against your own server, so there's no downside to keeping the cache entry
 - Also available as a source in the standalone Erase Tool, alongside MangaDex and local folder/CBZ (see below)
 
+### Tuning bubble merging
+- **⚖ MERGE** on any page opens a live preview of the **Bubble Merge Sensitivity** setting, drawn over that page: each box is one region the pipeline would translate as a unit, and dragging the slider re-groups them instantly
+- The right value depends on how a particular series is lettered — how far apart its bubbles sit, how tightly its lines are set — so rather than guess and re-read a chapter to find out, you can see the answer on the page in front of you
+- Costs nothing to use: re-grouping already-detected text is pure geometry (~20ms), so it re-runs neither OCR nor translation and spends no API quota
+
 ### Manual correction & QA
 - **✏ Correct UI** — draw, split, merge, delete, and reorder bubble regions by hand when the automatic pass gets something wrong
 - Two ways to draw a *new* region: a normal draw (re-OCRs the crop with EasyOCR) or a **✦ VISION draw** (sends the same crop to Gemini Vision instead) — for stylized/decorative fonts, vertical or mixed-script SFX, or anywhere the confidence badge was clearly wrong

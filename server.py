@@ -113,6 +113,7 @@ import base64
 import os
 import platform
 import socket
+import hashlib
 import threading
 import time
 import webbrowser
@@ -2485,13 +2486,50 @@ def _merge_bubble_regions(
     # can't tell those apart; only the gap's SIZE relative to normal
     # same-bubble spacing can, which is what this constant controls.
     #
-    # UNVALIDATED STARTING VALUE — chosen conservatively small relative to
-    # LINE_GAP_FACTOR, not yet measured against real pages. Needs checking
-    # against (a) the RapidOCR Brazil_raw.jpg case (confirm the two bubbles
-    # no longer merge) and (b) a real staggered-lettering page (confirm that
-    # legitimate merge still succeeds) before this is trusted — same bar
-    # every other constant in this file is held to.
-    HORIZONTAL_GAP_FACTOR = 0.5
+    # MEASURED, 2026-08-19, against 15 real pages on BOTH engines (was an
+    # unvalidated 0.5). Lowered to 0.3 because 0.5 was over-merging pairs of
+    # ADJACENT TEXT CONTAINERS across a clean whitespace gutter — the exact
+    # failure this constant was introduced to prevent, at a value too loose
+    # to actually prevent it.
+    #
+    # Three distinct real-page cases, all fixed by 0.3, all previously
+    # producing a single region with the two containers' lines interleaved:
+    #   manga page test_Untranslated.jpg  two side-by-side caption boxes
+    #                                     ("Y ENCIMA, EN EL CAPÍTULO…" /
+    #                                     "¿Y EN ESE MOMENTO…") — hit on BOTH
+    #                                     engines, not RapidOCR-specific.
+    #   Manga page test 2_Untranslated.jpg + its translated twin
+    #                                     two adjacent speech bubbles.
+    #   Brazil_raw.jpg                    "HUH?" bubble absorbed into the
+    #                                     neighbouring "…CHEGAMOS" bubble —
+    #                                     a second over-merge on the page the
+    #                                     waist veto was verified against,
+    #                                     which that verification missed
+    #                                     because it only checked the two
+    #                                     bubbles the waist fix targeted.
+    #
+    # Why the existing vetoes can't catch these: the caption boxes are ONE
+    # flat-light component (the gutter is pure 255 white — measured — so
+    # there is no ink for _crosses_bubble_boundary or the outline carving to
+    # find), and they are RECTANGLES, so the silhouette has no constriction
+    # for _waist_separates_boxes to measure (extent across the gutter runs
+    # 348→355→363→372→379px — monotonic, waist ratio 0.948 vs the 0.85
+    # threshold). Shape and ink signals are both structurally absent here;
+    # gap SIZE is the only thing left, which is precisely what this constant
+    # controls.
+    #
+    # Sweep evidence (0.5 → 0.05, merge re-run over cached OCR fragments so
+    # only this constant varied): every single change at every value was a
+    # SPLIT that inspection confirmed correct, on both engines — no page ever
+    # lost a region or had a line broken in half. 0.3 is the loosest value
+    # that fixes all three cases (RapidOCR needs ≤0.35, EasyOCR ≤0.30).
+    #
+    # STILL UNVALIDATED: the staggered/zigzag-lettering case this constant
+    # exists to protect. None of the 15 sample pages contains a bubble whose
+    # OCR fragmentsneeds horizontal merging, which is also why every reduction
+    # looked free. If a page shows legitimate side-by-side fragments failing
+    # to merge, THAT is the case to re-measure against — not this one.
+    HORIZONTAL_GAP_FACTOR = 0.3
 
     is_webtoon  = (img_h / max(img_w, 1)) > 2.0
     eff_scale_v = margin_scale * LINE_GAP_FACTOR       * (0.6 if is_webtoon else 1.0)
@@ -3099,28 +3137,19 @@ def _rapidocr_readtext_primary(engine, arr, lang: str):
     return fragments, confidences
 
 
-def _run_easyocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
-    """
-    Run the full EasyOCR detection + bubble-merge pipeline on a page image.
+def _prepare_page_for_detection(image_bytes: bytes):
+    """Decode + panel/bubble detection + CLAHE preprocess.
 
-    This is the box-DETECTION half of OCR: panel-border detection, CLAHE
-    preprocessing, EasyOCR readtext, confidence filtering, and union-find
-    bubble merging. It does not care which engine eventually supplies the
-    *text* for each region — Gemini Vision results can be matched onto
-    these boxes by _match_vision_to_easyocr() below, since EasyOCR's
-    bounding boxes come from a real text-detection model and don't suffer
-    from the spatial hallucination that small LLMs like Flash-Lite do.
+    This prologue is identical for every local engine — _run_easyocr_detection
+    and _run_rapidocr_detection each had their own copy (the RapidOCR one's
+    comment even said "byte-for-byte identical to _run_easyocr_detection's"),
+    Factored out so there is one copy, and the engines differ only where they
+    actually differ: which recogniser reads the preprocessed array.
 
-    Returns:
-        regions       — [{text, cx, cy, box, confidence, raw_box_ids}, …]
-                         (EasyOCR's own recognised text; may be ignored by
-                         the caller). confidence is min-across-fragments,
-                         0-1, always a real number on this path (EasyOCR
-                         always supplies confidences here).
-        raw_boxes_out — [{id, text, box, px}, …] per-fragment boxes that
-                         regions[i]['raw_box_ids'] index into
+    Returns (arr_pre, arr_raw, w, h, gray_orig, h_borders, v_borders,
+    bubble_label_map). arr_raw is the UNpreprocessed array, which both
+    engines' zero-box retry paths need.
     """
-    # 2. Decode
     try:
         pil  = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         w, h = pil.size
@@ -3128,62 +3157,55 @@ def _run_easyocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
     except Exception as e:
         abort(422, f"Image decode error: {e}")
 
-    # 2b. Detect panel borders from the ORIGINAL grayscale image.
-    #     Must be done before preprocessing because CLAHE can alter the dark
-    #     border lines and make them harder to distinguish from panel content.
-    gray_orig         = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    # Panel borders and bubble components both come from the ORIGINAL
+    # grayscale: CLAHE's contrast remapping would distort the dark border
+    # lines and the flatness signal alike. See _find_bubble_components.
+    gray_orig            = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
     h_borders, v_borders = _find_panel_borders(gray_orig, w, h)
-    # NEW, UNVALIDATED (see _find_bubble_components docstring) — computed
-    # from the same pre-CLAHE grayscale array and for the same reason:
-    # CLAHE's contrast remapping would distort the flatness signal this
-    # relies on just as much as it would distort panel border lines.
     bubble_label_map     = _find_bubble_components(gray_orig, w, h)
 
-    # 2c. Preprocess — CLAHE contrast enhancement + mild denoising.
-    #     Improves OCR accuracy significantly for text printed over patterned
-    #     or gradient backgrounds, and for languages with fine diacritics.
-    arr = _preprocess_for_ocr(arr)
+    # CLAHE + mild denoising — helps text over patterned/gradient
+    # backgrounds, and languages with fine diacritics.
+    arr_pre = _preprocess_for_ocr(arr)
+    return arr_pre, arr, w, h, gray_orig, h_borders, v_borders, bubble_label_map
 
-    # 3. OCR  (serialised — PyTorch is not thread-safe)
+
+def _boxes_from_fragments(fragments):
+    """[(bbox, text), …] -> [(x1, y1, x2, y2, text), …] axis-aligned."""
+    out = []
+    for bbox, text in fragments:
+        xs = [p[0] for p in bbox]
+        ys = [p[1] for p in bbox]
+        out.append((min(xs), min(ys), max(xs), max(ys), text))
+    return out
+
+
+def _easyocr_fragment_boxes(arr_pre, arr_raw, lang: str):
+    """EasyOCR fragments for a prepared page, including its zero-box retry.
+
+    Confidence filtering is deliberately NOT applied here — it is deferred to
+    _merge_bubble_regions, which can tell an isolated low-confidence fragment
+    from one sitting among confident neighbours. See that function's
+    "Confidence-aware filtering" docstring section.
+    """
     try:
         reader = _get_reader(lang)
         with _infer_lock:
-            fragments, frag_confidences = _easyocr_readtext_primary(reader, arr, lang)
+            fragments, frag_confidences = _easyocr_readtext_primary(reader, arr_pre, lang)
     except Exception as e:
         abort(500, f"OCR failed: {e}")
 
-    # 4. Build the candidate box list. Per-language min_conf is applied
-    #    below via _merge_bubble_regions rather than here — see that
-    #    function's "Confidence-aware filtering" docstring section for why:
-    #    a low-confidence fragment that's spatially adjacent to (and would
-    #    merge with) confident neighbours is much more likely to be real
-    #    text than an isolated one, and only _merge_bubble_regions knows
-    #    which fragments are adjacent. Filtering here, before clustering
-    #    happens, can't tell the two cases apart. (The short-word carve-out
-    #    is already applied — as a hard floor, not deferred — inside
-    #    _easyocr_readtext_primary; see SHORT_WORD_MIN_CONF's module-level
-    #    comment for why that one stays undeferred.)
-    min_conf = _MIN_CONF_MAP.get(lang, 0.35)
-    boxes = []          # each entry: (x1, y1, x2, y2, text)
-    confidences = []    # parallel to boxes — see _merge_bubble_regions docstring
-    for (bbox, text), conf in zip(fragments, frag_confidences):
-        # bbox: [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
-        xs = [p[0] for p in bbox]
-        ys = [p[1] for p in bbox]
-        boxes.append((min(xs), min(ys), max(xs), max(ys), text))
-        confidences.append(conf)
+    boxes       = _boxes_from_fragments(fragments)
+    confidences = list(frag_confidences)
 
-    # 4b. Fallback retry — only when preprocessing returned literally zero boxes.
-    #     Threshold is 0, not 2, so wordless art pages (which correctly have no
-    #     text) are never double-processed.  We only retry when OCR found nothing
-    #     at all, suggesting preprocessing may have hurt rather than helped
-    #     (e.g. an unusual panel where the selected channel was counterproductive).
-    #     Uses the raw original image + EasyOCR's own max internal contrast boost.
+    # Retry only when OCR found literally nothing, which suggests
+    # preprocessing hurt rather than helped. Threshold is 0, not 2, so
+    # wordless art pages are never double-processed.
     if len(boxes) == 0:
         print(f"  [OCR] Zero boxes from preprocessed image — retrying on raw "
               f"(lang={lang})")
         try:
-            arr_raw = np.array(pil)
+            min_conf = _MIN_CONF_MAP.get(lang, 0.35)
             with _infer_lock:
                 raw2 = reader.readtext(
                     arr_raw,
@@ -3207,133 +3229,32 @@ def _run_easyocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
         except Exception as e:
             print(f"  [OCR] Raw fallback failed: {e}")
 
-    # 5. Build raw_box output (percentage + pixel coords) before merging.
-    #    The frontend stores these to support the correction UI split feature.
-    raw_boxes_out = [
-        {
-            "id":  idx,
-            "text": b[4],
-            "box": [
-                round(b[0] / w * 100, 1), round(b[1] / h * 100, 1),
-                round(b[2] / w * 100, 1), round(b[3] / h * 100, 1),
-            ],
-            "px":  [int(b[0]), int(b[1]), int(b[2]), int(b[3])],
-        }
-        for idx, b in enumerate(boxes)
-    ]
-
-    # 6. Merge nearby boxes — fragments from the same speech bubble get
-    #    clustered together using union-find on expanded bounding boxes,
-    #    with panel borders acting as hard merge barriers.
-    regions, group_raw_ids = _merge_bubble_regions(
-        boxes, w, h, h_borders, v_borders, margin_scale,
-        confidences=confidences, min_conf=min_conf, clustered_floor=SHORT_WORD_MIN_CONF,
-        bubble_label_map=bubble_label_map,
-        # Same pre-CLAHE grayscale used for border/bubble detection above —
-        # projection profiling needs real ink density, which CLAHE's
-        # contrast remapping would distort just like it would the other
-        # two signals (see the comment on gray_orig's first use).
-        gray=gray_orig,
-    )
-
-    # 7. Attach raw_box_ids so the frontend knows which raw fragments
-    #    belong to each merged region (needed for the split correction tool).
-    for region, raw_ids in zip(regions, group_raw_ids):
-        region["raw_box_ids"] = raw_ids
-
-    # Panel border positions, as percentages of image width/height — same
-    # coordinate convention as region cx/cy — so the frontend can do real
-    # panel-aware reading-order sorting instead of guessing from cy alone.
-    # This data was already being computed (used internally by the merge
-    # step above for its panel-border merge guard) but previously discarded
-    # before the response was built; nothing new is computed here, it's
-    # just no longer thrown away.
-    h_borders_pct = [round(y / h * 100, 1) for y in h_borders]
-    v_borders_pct = [round(x / w * 100, 1) for x in v_borders]
-
-    return regions, raw_boxes_out, h_borders_pct, v_borders_pct
+    return boxes, confidences
 
 
-def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
+def _rapidocr_fragment_boxes(arr_pre, arr_raw, lang: str):
+    """RapidOCR fragments for a prepared page, including its zero-box retry.
+
+    Same deferred-confidence contract as _easyocr_fragment_boxes. RapidOCR
+    has no equivalent to EasyOCR's contrast_ths / text_threshold retry knobs,
+    so the retry simply re-runs on the raw array with a slightly relaxed
+    floor — same shape of relaxation, for consistency.
     """
-    RapidOCR counterpart to _run_easyocr_detection() — identical shape,
-    identical return contract, and reuses every shared helper that function
-    uses (_find_panel_borders, _find_bubble_components, _preprocess_for_ocr,
-    _merge_bubble_regions). Only step 3 (the actual OCR call) and its
-    zero-box retry differ, because those are the only genuinely
-    engine-specific pieces of the pipeline — see _rapidocr_readtext_primary
-    for why the two engines' raw calling conventions don't unify further
-    than this.
-
-    Why this exists as a second, mostly-parallel function instead of one
-    shared function with an engine parameter: this file's own precedent
-    already does it this way — _easyocr_readtext_primary's docstring notes
-    it's shared between this function and /ocr-crop, while each of *those*
-    keeps its own orchestration. Two engine-specific top-level pipelines
-    sharing small primitives is the established pattern here, not a new one.
-
-    Tested (see Devlog "RapidOCR: second local OCR engine") on real
-    Spanish/Portuguese/Vietnamese/Turkish manga pages: faster and lighter
-    than EasyOCR across the board, more accurate on Portuguese, clearly
-    *less* accurate on Vietnamese (systematic diacritic corruption that its
-    own confidence score does not flag), and — unlike EasyOCR — unaffected
-    by a page's language not matching the chapter's declared language,
-    since _get_rapidocr_engine() doesn't key on language at all. None of
-    that is encoded as a hard rule inside this function; see
-    _recommend_local_engine() for the (currently provisional, single-page
-    per language) per-language guidance surfaced to the user instead of
-    baked into routing here.
-
-    Returns: identical shape to _run_easyocr_detection — (regions,
-    raw_boxes_out, h_borders_pct, v_borders_pct).
-    """
-    # 1-2c. Decode + panel/bubble detection + CLAHE preprocess — byte-for-byte
-    # the same steps _run_easyocr_detection uses, since none of this is
-    # EasyOCR-specific. Duplicated here rather than factored into a shared
-    # helper for this first pass — see build note in Devlog for the planned
-    # follow-up if a third engine ever gets added.
-    try:
-        pil  = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        w, h = pil.size
-        arr  = np.array(pil)
-    except Exception as e:
-        abort(422, f"Image decode error: {e}")
-
-    gray_orig             = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
-    h_borders, v_borders  = _find_panel_borders(gray_orig, w, h)
-    bubble_label_map      = _find_bubble_components(gray_orig, w, h)
-    arr = _preprocess_for_ocr(arr)
-
-    # 3. OCR (serialised — see _rapidocr_infer_lock's comment on why we're
-    #    cautious here even though onnxruntime is more thread-safe than
-    #    PyTorch)
     try:
         engine = _get_rapidocr_engine()
         with _rapidocr_infer_lock:
-            fragments, frag_confidences = _rapidocr_readtext_primary(engine, arr, lang)
+            fragments, frag_confidences = _rapidocr_readtext_primary(engine, arr_pre, lang)
     except Exception as e:
         abort(500, f"OCR failed: {e}")
 
-    min_conf = _MIN_CONF_MAP.get(lang, 0.35)
-    boxes = []
-    confidences = []
-    for (bbox, text), conf in zip(fragments, frag_confidences):
-        xs = [p[0] for p in bbox]
-        ys = [p[1] for p in bbox]
-        boxes.append((min(xs), min(ys), max(xs), max(ys), text))
-        confidences.append(conf)
+    boxes       = _boxes_from_fragments(fragments)
+    confidences = list(frag_confidences)
 
-    # 4b. Zero-box retry — same rationale as _run_easyocr_detection's
-    #     (preprocessing may have hurt rather than helped), but RapidOCR has
-    #     no equivalent to EasyOCR's contrast_ths/text_threshold retry knobs,
-    #     so this just re-runs on the raw, unpreprocessed image with a
-    #     slightly relaxed min_conf floor — same shape of relaxation
-    #     (max(min_conf - 0.05, 0.20)) as the EasyOCR path, for consistency.
     if len(boxes) == 0:
         print(f"  [OCR] RapidOCR: zero boxes from preprocessed image — "
               f"retrying on raw (lang={lang})")
         try:
-            arr_raw = np.array(pil)
+            min_conf = _MIN_CONF_MAP.get(lang, 0.35)
             with _rapidocr_infer_lock:
                 fragments2, conf2 = _rapidocr_readtext_primary(engine, arr_raw, lang)
             floor = max(min_conf - 0.05, 0.20)
@@ -3349,8 +3270,17 @@ def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
         except Exception as e:
             print(f"  [OCR] RapidOCR raw fallback failed: {e}")
 
-    # 5-7. Raw box output, bubble merge, raw_box_ids, border percentages —
-    # identical to _run_easyocr_detection from here on.
+    return boxes, confidences
+
+
+def _finish_local_detection(boxes, confidences, lang, w, h, h_borders, v_borders,
+                             bubble_label_map, gray_orig, margin_scale):
+    """Raw-box output, bubble merge, raw_box_ids, border percentages.
+
+    The tail every local engine shares, factored out for the same reason as
+    _prepare_page_for_detection. Returns the four-value contract every
+    _run_*_detection function hands back to /ocr.
+    """
     raw_boxes_out = [
         {
             "id":  idx,
@@ -3366,8 +3296,13 @@ def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
 
     regions, group_raw_ids = _merge_bubble_regions(
         boxes, w, h, h_borders, v_borders, margin_scale,
-        confidences=confidences, min_conf=min_conf, clustered_floor=SHORT_WORD_MIN_CONF,
+        confidences=confidences,
+        min_conf=_MIN_CONF_MAP.get(lang, 0.35),
+        clustered_floor=SHORT_WORD_MIN_CONF,
         bubble_label_map=bubble_label_map,
+        # Pre-CLAHE grayscale: projection profiling needs real ink density,
+        # which CLAHE's contrast remapping would distort just as it would the
+        # border and flatness signals.
         gray=gray_orig,
     )
     for region, raw_ids in zip(regions, group_raw_ids):
@@ -3375,10 +3310,54 @@ def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
 
     h_borders_pct = [round(y / h * 100, 1) for y in h_borders]
     v_borders_pct = [round(x / w * 100, 1) for x in v_borders]
-
     return regions, raw_boxes_out, h_borders_pct, v_borders_pct
 
 
+def _run_easyocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
+    """
+    Detect text boxes with EasyOCR and merge them into speech-bubble regions.
+
+    This is the box-DETECTION half of OCR: panel-border detection, CLAHE
+    preprocessing, EasyOCR, then bubble merging. The shared stages live in
+    _prepare_page_for_detection / _finish_local_detection so this function,
+    and _run_rapidocr_detection cannot drift apart.
+
+    Returns:
+        regions       — merged bubble regions, each with text/cx/cy/box/…
+        raw_boxes_out — [{id, text, box, px}, …] per-fragment boxes that
+                         regions[i]['raw_box_ids'] index into
+        h_borders_pct, v_borders_pct — panel borders as % of page dimensions
+    """
+    arr_pre, arr_raw, w, h, gray_orig, h_borders, v_borders, bubble_label_map = \
+        _prepare_page_for_detection(image_bytes)
+    boxes, confidences = _easyocr_fragment_boxes(arr_pre, arr_raw, lang)
+    return _finish_local_detection(boxes, confidences, lang, w, h,
+                                    h_borders, v_borders, bubble_label_map,
+                                    gray_orig, margin_scale)
+
+
+def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
+    """
+    RapidOCR counterpart to _run_easyocr_detection — same contract, same
+    shared prologue/epilogue, different recogniser.
+
+    Why this exists alongside EasyOCR rather than replacing it: the two
+    engines have different per-language strengths (see
+    _LOCAL_ENGINE_RECOMMENDATION), and RapidOCR's bundled model covers a
+    single unified character set rather than being bound to the chapter's
+    declared language — see _get_rapidocr_engine's docstring.
+
+    KNOWN WEAKNESS: RapidOCR drops most Vietnamese tone marks — measured at
+    8.0% marked characters against a hand-read 23.2% on a real page. See
+    KNOWN_ISSUES_DRAFT.md's hybrid-detection entry for the full numbers and
+    for why the two-engine fix built against them was not kept.
+    """
+    arr_pre, arr_raw, w, h, gray_orig, h_borders, v_borders, bubble_label_map = \
+        _prepare_page_for_detection(image_bytes)
+    boxes, confidences = _rapidocr_fragment_boxes(arr_pre, arr_raw, lang)
+    return _finish_local_detection(boxes, confidences, lang, w, h,
+                                    h_borders, v_borders, bubble_label_map,
+                                    gray_orig, margin_scale)
 # Provisional per-language local-engine guidance — NOT a hard routing rule.
 # Based on one real manga page per language (es/pt/vi/tr), tested manually
 # in one session — see Devlog "RapidOCR: second local OCR engine" for the
@@ -3415,6 +3394,7 @@ _LOCAL_ENGINE_RECOMMENDATION = {
     # sample tested so far — no recommendation is surfaced (see
     # _recommend_local_engine).
 }
+
 
 def _recommend_local_engine(lang: str, current: str):
     """
@@ -4624,6 +4604,132 @@ def ocr_page():
     })
 
 
+# ─── Merge-sensitivity preview ───────────────────────────────────────────────
+# Re-grouping already-detected fragments at a different Bubble Merge
+# Sensitivity costs ~20ms; the OCR that produced those fragments cost ~22s on
+# the same page. That 1100x gap is what makes a live preview practical: the
+# client already holds each page's raw fragment boxes (rawBoxes in
+# _pageStore), so tuning the slider needs no recogniser pass at all — only the
+# geometry step, plus the panel/bubble CV prep the merge vetoes depend on.
+#
+# That prep (_find_panel_borders + _find_bubble_components) is ~230ms, which
+# WOULD be felt while dragging a slider, so it is cached for the most recently
+# previewed image. One entry, not an LRU: tuning happens on one page at a
+# time, and the label map for a large page is ~10MB — worth holding once, not
+# four times, on the low-end hardware this app targets.
+_merge_preview_cache = {"key": None, "value": None}
+_merge_preview_lock  = threading.Lock()
+
+
+def _merge_preview_prep(image_bytes: bytes):
+    """(gray, label_map, h_borders, v_borders, w, h) for an image, cached.
+
+    Keyed by a hash of the image bytes rather than by URL: the same page can
+    arrive as a CDN url, a proxied url, or inline base64 (local folder/CBZ),
+    and all three should share one cache entry.
+    """
+    key = hashlib.sha256(image_bytes).hexdigest()
+    with _merge_preview_lock:
+        if _merge_preview_cache["key"] == key:
+            return _merge_preview_cache["value"]
+
+    try:
+        pil  = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        w, h = pil.size
+        arr  = np.array(pil)
+    except Exception as e:
+        abort(422, f"Image decode error: {e}")
+
+    gray                 = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+    h_borders, v_borders = _find_panel_borders(gray, w, h)
+    label_map            = _find_bubble_components(gray, w, h)
+    value = (gray, label_map, h_borders, v_borders, w, h)
+
+    with _merge_preview_lock:
+        _merge_preview_cache["key"]   = key
+        _merge_preview_cache["value"] = value
+    return value
+
+
+@app.route("/merge-preview", methods=["POST"])
+def merge_preview():
+    """
+    Re-group a page's ALREADY-DETECTED fragments at a given merge sensitivity,
+    so the frontend can show what a slider value does to a real page live.
+
+    Body: { "url" | "image_b64":  the page image (same contract as /ocr),
+            "raw_boxes":     [{"px": [x1,y1,x2,y2], "text": "…"}, …]
+                             — the page's own fragments, which the client
+                             already has from the original /ocr response
+            "margin_scale":  float, the sensitivity being previewed }
+
+    Response: { "regions": [{text, cx, cy, box, raw_box_ids}, …],
+                "count": N, "fragment_count": M }
+
+    Deliberately does NOT run OCR or translation. It exists so the user can
+    answer "what does this slider do to MY manga" without paying ~22s per
+    adjustment, and without spending translation quota to find out. Region
+    text is the concatenation the merge produces, which is what makes an
+    over-merge visible (two bubbles' lines interleaved in one region).
+    """
+    body = request.get_json(silent=True) or {}
+
+    try:
+        margin_scale = float(body.get("margin_scale", 0.5))
+    except (TypeError, ValueError):
+        abort(400, "margin_scale must be a number")
+    # Same range the UI slider offers. Clamped rather than rejected so a
+    # stale client can't 400 the whole panel over a rounding difference.
+    margin_scale = max(0.1, min(1.5, margin_scale))
+
+    raw_boxes = body.get("raw_boxes")
+    if not isinstance(raw_boxes, list) or not raw_boxes:
+        abort(400, "raw_boxes must be a non-empty list — "
+                   "re-run OCR for this page first")
+    if len(raw_boxes) > 2000:
+        abort(413, f"Too many fragments ({len(raw_boxes)}) for a preview")
+
+    image_bytes = _load_image_bytes(body)
+    gray, label_map, h_borders, v_borders, w, h = _merge_preview_prep(image_bytes)
+
+    boxes = []
+    for rb in raw_boxes:
+        px = (rb or {}).get("px")
+        if not (isinstance(px, list) and len(px) == 4):
+            continue
+        try:
+            x1, y1, x2, y2 = (int(px[0]), int(px[1]), int(px[2]), int(px[3]))
+        except (TypeError, ValueError):
+            continue
+        boxes.append((x1, y1, x2, y2, str(rb.get("text", ""))))
+    if not boxes:
+        abort(400, "no usable fragment boxes in raw_boxes (each needs px=[x1,y1,x2,y2])")
+
+    # confidences=None / min_conf=None deliberately: the preview shows pure
+    # GROUPING at this sensitivity. Confidence filtering would drop fragments
+    # for a reason unrelated to the slider being tuned, which would make the
+    # preview misleading about what the slider itself is doing.
+    regions, group_raw_ids = _merge_bubble_regions(
+        boxes, w, h, h_borders, v_borders, margin_scale,
+        confidences=None, min_conf=None,
+        clustered_floor=SHORT_WORD_MIN_CONF,
+        bubble_label_map=label_map,
+        gray=gray,
+    )
+    for region, raw_ids in zip(regions, group_raw_ids):
+        region["raw_box_ids"] = raw_ids
+
+    return jsonify({
+        "regions": [
+            {"text": r.get("text", ""), "cx": r.get("cx"), "cy": r.get("cy"),
+             "box": r.get("box"), "raw_box_ids": r.get("raw_box_ids", [])}
+            for r in regions
+        ],
+        "count": len(regions),
+        "fragment_count": len(boxes),
+    })
+
+
 @app.route("/ocr-crop", methods=["POST"])
 def ocr_crop():
     """
@@ -5081,7 +5187,12 @@ if __name__ == "__main__":
     # FIX #10 — friendly error instead of a cryptic socket traceback
     if _port_in_use(PORT):
         print(f"\n  ✗  Port {PORT} is already in use.")
-        print(f"     Stop the other process, or change PORT at the top of this script.\n")
+        print( "     Either stop whatever is using it, or pick another port")
+        print( "     with the PORT environment variable — no need to edit this file:")
+        print( "")
+        print( "        (macOS/Linux)  PORT=8081 python server.py")
+        print( "        (Windows PS)   $env:PORT=8081; python server.py")
+        print( "")
         sys.exit(1)
 
     _check_exposure_or_exit(HOST)
