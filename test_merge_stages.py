@@ -366,6 +366,16 @@ def test_line_cluster():
     check(lc(boxes, []) == [], "empty input -> empty order")
     check(lc(boxes, [1]) == [1], "single fragment passes through")
 
+    # cluster_into_lines is the shared line-grouping detect_column_split also
+    # uses, so its contract is pinned here rather than only via line_cluster.
+    cil = _server.cluster_into_lines
+    three = [(100, 200, 300, 240, "b"), (100, 100, 300, 140, "a1"),
+             (320, 100, 400, 140, "a2"), (100, 300, 300, 340, "c")]
+    got = [[three[i][4] for i in line] for line in cil(three, [0, 1, 2, 3])]
+    check(len(got) == 3 and sorted(got[0]) == ["a1", "a2"],
+          "cluster_into_lines groups by y-overlap, ordered top-to-bottom", f"{got}")
+    check(cil(three, []) == [], "cluster_into_lines: empty input -> no lines")
+
 
 def test_column_split():
     print("\n-- detect_column_split --")
@@ -402,6 +412,68 @@ def test_column_split():
     one_col = [(100, 100 + r * 50, 300, 140 + r * 50, f"L{r}") for r in range(5)]
     check(dcs(one_col, list(range(5))) is None, "a single column is not split")
     check(dcs(two_col, [0, 1]) is None, "fewer than 2x min_fragments -> None")
+
+    # THE RAGGED RIGHT EDGE (reported from real reading, 2026-08-21). A bubble
+    # lettered
+    #     SIEMPRE          QUE
+    #     NECESITO
+    #     AYUDA            ...
+    # has two fragments right of a clean vertical river spanning the identical
+    # y-range as the left block, so it cleared checks 1-3 outright and got read
+    # as a second column — turning "SIEMPRE QUE NECESITO AYUDA..." into
+    # "SIEMPRE NECESITO AYUDA QUE ...", moving a word off the first line to the
+    # end of the sentence. Check 4 (line density) is what rejects it: the right
+    # side has 2 lines where the left has 3 over the same band.
+    # These coordinates are REACHABLE, which matters: detect_column_split only
+    # ever runs on fragments that already merged into one region, so a gap wide
+    # enough to look dramatic in isolation (the first draft of this test used
+    # 120px) is one the union-find would never have bridged — it would test a
+    # state the pipeline cannot produce. Here the trailing words sit 12px past
+    # where the other lines end: close enough to merge at margin_scale 1.0
+    # (horizontal reach 12px/box), still >= 3% of region width, so the river
+    # is found. Verified end to end below.
+    ragged = [(100, 100, 290, 140, "SIEMPRE"), (302, 100, 370, 140, "QUE"),
+              (100, 160, 280, 200, "NECESITO"),
+              (100, 220, 280, 260, "AYUDA"),   (302, 220, 345, 260, "...")]
+    check(dcs(ragged, list(range(len(ragged)))) is None,
+          "ragged right edge (trailing words on some lines) is not a column")
+
+    check([ragged[i][4] for i in _server.order_fragments(ragged, list(range(len(ragged))))]
+          == ["SIEMPRE", "QUE", "NECESITO", "AYUDA", "..."],
+          "ragged bubble reads in sentence order, not column order")
+
+    # End to end through the real entry point: one region, words in sentence
+    # order. Before the fix this produced "SIEMPRE NECESITO AYUDA QUE ...".
+    regions, _ = _server._merge_bubble_regions(ragged, 800, 600, margin_scale=1.0)
+    check(len(regions) == 1 and regions[0]["text"] == "SIEMPRE QUE NECESITO AYUDA ...",
+          "_merge_bubble_regions keeps the ragged bubble in sentence order",
+          f"{[r['text'] for r in regions]}")
+
+    # A hole anywhere in the sparser side is enough — not just the middle.
+    for hole in (1, 2):
+        b = [(100, 100 + r * 60, 300, 140 + r * 60, f"L{r}") for r in range(4)]
+        b += [(420, 100 + r * 60, 500, 140 + r * 60, f"R{r}")
+              for r in range(4) if r != hole]
+        check(dcs(b, list(range(len(b)))) is None,
+              f"right side skipping line {hole + 1} is not a column")
+
+    # Check 4 must NOT cost the case check 3 protects. A genuine two-column
+    # bubble stays detected at every baseline drift — this is the regression
+    # guard for the first version of check 4, which measured line CONTIGUITY
+    # against a clustering of both sides mixed together. That looked right and
+    # failed in a band around 60% of line height, where the mixed list
+    # alternates L,R,L,R and neither side's indices are contiguous.
+    drift_ok = []
+    for drift in range(0, 44, 4):
+        b = []
+        for r in range(4):
+            y = 100 + r * 50
+            b.append((100, y, 280, y + 40, f"L{r}"))
+            b.append((400, y + drift, 580, y + drift + 40, f"R{r}"))
+        drift_ok.append(dcs(b, list(range(len(b)))) is not None)
+    check(all(drift_ok),
+          "real two columns stay detected at every baseline drift 0-40px",
+          f"failed at drifts {[d for d, ok in zip(range(0, 44, 4), drift_ok) if not ok]}")
 
 
 def test_order_fragments():

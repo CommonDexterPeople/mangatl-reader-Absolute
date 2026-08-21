@@ -587,6 +587,39 @@ def filter_groups_by_confidence(groups: dict, confidences=None,
 
 # -- Stage 4: reading order within a group -----------------------------------
 
+def cluster_into_lines(boxes, idxs: list) -> list:
+    """
+    Group fragment indices into visual LINES by vertical overlap, ordered
+    top-to-bottom. Returns a list of lines, each a list of box indices
+    (unordered within a line — line_cluster sorts those left-to-right).
+
+    Split out of line_cluster so detect_column_split can ask the same
+    question against the same definition of "a line". A candidate column has
+    to be checked against the region's REAL line structure; approximating
+    that from y-extents alone is precisely what made it misfire (see the
+    line-contiguity note in its docstring).
+    """
+    items = sorted(idxs, key=lambda i: boxes[i][1])  # seed by top-y
+    lines: list[list[int]] = []
+    for i in items:
+        y1, y2 = boxes[i][1], boxes[i][3]
+        placed = False
+        for line in lines:
+            # Compare against the line's current vertical extent
+            ly1 = min(boxes[k][1] for k in line)
+            ly2 = max(boxes[k][3] for k in line)
+            overlap = min(y2, ly2) - max(y1, ly1)
+            min_h   = min(y2 - y1, ly2 - ly1)
+            if min_h > 0 and overlap / min_h > 0.4:
+                line.append(i)
+                placed = True
+                break
+        if not placed:
+            lines.append([i])
+    lines.sort(key=lambda line: min(boxes[k][1] for k in line))
+    return lines
+
+
 def line_cluster(boxes, idxs: list) -> list:
     """
     Fragment indices ordered top-to-bottom by visual line, left-to-right
@@ -606,24 +639,7 @@ def line_cluster(boxes, idxs: list) -> list:
     # same-line neighbour's. Clustering by vertical overlap first is
     # robust to that: two boxes are "the same line" if they share
     # significant vertical extent, regardless of small y1 differences.
-    items = sorted(idxs, key=lambda i: boxes[i][1])  # seed by top-y
-    lines: list[list[int]] = []
-    for i in items:
-        y1, y2 = boxes[i][1], boxes[i][3]
-        placed = False
-        for line in lines:
-            # Compare against the line's current vertical extent
-            ly1 = min(boxes[k][1] for k in line)
-            ly2 = max(boxes[k][3] for k in line)
-            overlap = min(y2, ly2) - max(y1, ly1)
-            min_h   = min(y2 - y1, ly2 - ly1)
-            if min_h > 0 and overlap / min_h > 0.4:
-                line.append(i)
-                placed = True
-                break
-        if not placed:
-            lines.append([i])
-    lines.sort(key=lambda line: min(boxes[k][1] for k in line))
+    lines = cluster_into_lines(boxes, idxs)
     ordered = []
     for line in lines:
         line.sort(key=lambda i: boxes[i][0])  # left-to-right within line
@@ -665,6 +681,13 @@ def detect_column_split(boxes, idxs, min_overlap_frac=0.70, min_fragments=2):
          contrast, sits BELOW the paragraph's bottom edge with little
          or no y-overlap — this check correctly rejects that case
          without needing to know anything about its absolute height.
+
+      4. LINE DENSITY: across the vertical band the sparser side occupies,
+         it must have at least as many lines of its own as the other side
+         does. Check 3 reads only outer y-extents, so the ragged right-hand
+         ends of several lines score as a perfect column; counting lines
+         tells running text apart from a trailing tail. See the comment on
+         the check itself for the bug this fixes.
 
     Returns (left_idxs, right_idxs) if a genuine split is detected,
     else None (caller falls through to normal single-column handling).
@@ -723,6 +746,63 @@ def detect_column_split(boxes, idxs, min_overlap_frac=0.70, min_fragments=2):
     overlap = max(0, min(shorter_max, taller_max) - max(shorter_min, taller_min))
     if shorter_h <= 0 or (overlap / shorter_h) < min_overlap_frac:
         return None  # shorter side doesn't run parallel to the taller one
+
+    # 4. LINE CONTIGUITY. Check 3 compares only each side's OUTER y-extent
+    #    (min to max), which is blind to what sits between. Two fragments at
+    #    the top and bottom of the region produce exactly the same extent as a
+    #    dense column that really does run the whole way down, so a RAGGED
+    #    RIGHT EDGE scores a perfect 100% "parallel" and is read as a column.
+    #
+    #    That is a reported bug, not a hypothetical. On a bubble lettered
+    #
+    #        SIEMPRE          QUE
+    #        NECESITO
+    #        AYUDA            ...
+    #
+    #    the trailing "QUE" and "..." sit right of a clean vertical river,
+    #    number two fragments, and span the identical y-range to the left
+    #    block — clearing checks 1-3 outright. The split then read the left
+    #    column fully before the right, turning "SIEMPRE QUE NECESITO
+    #    AYUDA..." into "SIEMPRE NECESITO AYUDA QUE ...", teleporting a word
+    #    off the first line to the end of the sentence.
+    #
+    #    What separates the two cases is not extent but DENSITY: a genuine
+    #    column has a fragment on every line it spans, because it is running
+    #    text. A ragged edge is the tail ends of other lines, so it skips
+    #    lines in the middle — above, the right side occupies lines 1 and 3
+    #    with a hole at line 2, where the left side has three. Requiring the
+    #    sparser side to carry as many lines as the other one does over the
+    #    same band rejects that, while leaving a genuine short column (a
+    #    2-line aside, dense over its own band) untouched — which is exactly
+    #    the case check 3 was written to protect.
+    #    Measured per side against its OWN line structure, never against a
+    #    clustering of both sides mixed together. Mixing them looks correct
+    #    and is not: when two real columns are baseline-offset by enough that
+    #    cluster_into_lines stops pairing them, the mixed list alternates
+    #    L,R,L,R and each side's line INDICES come out {0,2,4,6} / {1,3,5,7} —
+    #    contiguous nowhere, so a perfectly good two-column bubble is refused.
+    #    Verified: that lands at ~60% of line height of drift, and it is a
+    #    band, not a threshold — the rejection appears at 24px on a 40px line
+    #    and then disappears again by 32px, which is precisely the signature
+    #    of a test measuring the wrong thing rather than a value needing a
+    #    tweak. Comparing each side's own line COUNT against how many of the
+    #    other side's lines occupy the same vertical band has no such
+    #    dependency on how the two happen to interleave.
+    left_lines  = cluster_into_lines(boxes, left)
+    right_lines = cluster_into_lines(boxes, right)
+    sparser, sparse_idxs, denser_lines = (
+        (left_lines,  left,  right_lines) if len(left_lines) <= len(right_lines)
+        else (right_lines, right, left_lines)
+    )
+    band_min = min(boxes[i][1] for i in sparse_idxs)
+    band_max = max(boxes[i][3] for i in sparse_idxs)
+    covered = 0
+    for line in denser_lines:
+        mid = (min(boxes[k][1] for k in line) + max(boxes[k][3] for k in line)) / 2
+        if band_min <= mid <= band_max:
+            covered += 1
+    if len(sparser) < covered:
+        return None  # sparser side skips lines the other side fills — a tail
 
     return (left, right)
 
