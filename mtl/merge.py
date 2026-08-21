@@ -590,6 +590,17 @@ def filter_groups_by_confidence(groups: dict, confidences=None,
 # Two fragments are on the same line when their vertical CENTRES are within
 # this fraction of a line height. Centres, not box overlap — see
 # cluster_into_lines for the real-page failure that distinction fixes.
+#
+# Scaled by the LARGER of the two heights, not the smaller. A short fragment
+# beside a tall one is still on the tall one's line, and the line's height is
+# the tall one — scaling by the short fragment gives it a tolerance too tight
+# to reach its own line and splits it off. Measured on
+# eval_samples/Vietname pages/Vietname page eng 3.png: 'KA' (h=46) sits beside
+# '加y' (h=113) with baselines 56px apart; min() gives a 23px tolerance and
+# separates them, max() gives 56px and keeps them together. The prose case
+# this constant exists for is unaffected either way — the two consecutive
+# lines in cluster_into_lines' docstring are 18px apart against a 15px
+# tolerance under max(), so they still separate.
 _LINE_CENTRE_TOL = 0.5
 
 
@@ -646,7 +657,7 @@ def cluster_into_lines(boxes, idxs: list) -> list:
         height = y2 - y1
         placed = False
         for n, line in enumerate(lines):
-            if abs(centre - centres[n]) <= _LINE_CENTRE_TOL * min(height, heights[n]):
+            if abs(centre - centres[n]) <= _LINE_CENTRE_TOL * max(height, heights[n]):
                 line.append(i)
                 # Recompute from the members, so the line's centre stays put as
                 # it grows instead of stretching toward each new arrival.
