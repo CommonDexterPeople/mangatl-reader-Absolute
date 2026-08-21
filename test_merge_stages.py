@@ -376,6 +376,35 @@ def test_line_cluster():
           "cluster_into_lines groups by y-overlap, ordered top-to-bottom", f"{got}")
     check(cil(three, []) == [], "cluster_into_lines: empty input -> no lines")
 
+    # THE BASELINE-vs-OVERLAP REGRESSION (real geometry, from
+    # eval_samples/another problem 2.jpg, RapidOCR at default sensitivity).
+    # Two CONSECUTIVE lines of tightly-set lettering whose boxes overlap by
+    # 41% — just past the 40% the old overlap rule used. They were welded into
+    # one "line", after which ordering fell through to left-to-right and a ONE
+    # PIXEL difference in left edge (249 vs 248) decided which half of the
+    # sentence came first.
+    real = [(236, 580, 411, 615, "...POR LO QUE"),
+            (243, 603, 407, 631, "TE OBLIGARON"),
+            (249, 624, 398, 651, "A TRABAJAR"),
+            (248, 640, 400, 670, "DÍA Y NOCHE"),
+            (250, 663, 398, 690, "PARA PODER")]
+    got = [[real[i][4] for i in line] for line in cil(real, list(range(len(real))))]
+    check(all(len(l) == 1 for l in got),
+          "consecutive tight-set lines stay separate (41% box overlap, 18px baselines)",
+          f"{got}")
+    check([real[i][4] for i in _server.line_cluster(real, list(range(len(real))))]
+          == ["...POR LO QUE", "TE OBLIGARON", "A TRABAJAR", "DÍA Y NOCHE", "PARA PODER"],
+          "and therefore read in sentence order, not left-to-right across two lines")
+
+    # The other half of the same trade-off: raising an overlap threshold to
+    # separate the pair above would split genuinely same-line words. Centre
+    # distance must keep those together — differing y1, shared baseline.
+    same_line = [(200, 104, 400, 138, "paseo tranquilo."), (100, 100, 180, 140, "un")]
+    got2 = cil(same_line, [0, 1])
+    check(len(got2) == 1,
+          "words sharing a baseline stay on one line despite differing y1 and height",
+          f"{[[same_line[i][4] for i in l] for l in got2]}")
+
 
 def test_column_split():
     print("\n-- detect_column_split --")
