@@ -281,6 +281,84 @@ def test_veto_seam():
 
 # ── Stage 3: grouping and confidence filtering ────────────────────────────────
 
+def test_container_veto():
+    """Text in a bubble vs text on artwork — the territory map and its veto."""
+    print("\n-- _bubble_territory_map / _different_containers_separate_boxes --")
+    import cv2
+    from mtl.geometry import (_bubble_territory_map, _box_container,
+                              _different_containers_separate_boxes,
+                              _find_bubble_components)
+
+    # A page with one white bubble on dark artwork. Dark LETTERS inside the
+    # bubble are what make this a real test: they are holes in the bubble's
+    # light region, and the whole point of the territory map is that a
+    # fragment sitting on them still counts as inside the bubble.
+    g = np.full((400, 400), 40, dtype=np.uint8)          # dark artwork
+    cv2.ellipse(g, (260, 200), (110, 90), 0, 0, 360, 250, -1)   # bubble fill
+    cv2.ellipse(g, (260, 200), (110, 90), 0, 0, 360, 30, 3)     # bubble outline
+    for y in (170, 210):                                  # letters inside it
+        cv2.rectangle(g, (200, y), (320, y + 22), 30, -1)
+    # Caption on the artwork, drawn as outlined LETTER STROKES rather than a
+    # solid white block. That distinction is the fixture's whole validity: a
+    # solid block is itself a flat light region, so _find_bubble_components
+    # gives it its own component and it stops being the "text with no
+    # container" case this is meant to cover. Real free-floating manga
+    # lettering is strokes on artwork, and forms no component — measured at
+    # 0-2% territory coverage on eval_samples/caption_welds_to_bubble.jpg.
+    for y in (170, 210):
+        for x in range(20, 130, 14):
+            cv2.rectangle(g, (x, y), (x + 5, y + 22), 245, -1)
+
+    lbl  = _find_bubble_components(g, 400, 400)
+    terr = _bubble_territory_map(lbl)
+    check(terr is not None, "territory map is produced")
+
+    in_bubble_a = (200, 170, 320, 192)
+    in_bubble_b = (200, 210, 320, 232)
+    on_art_a    = (20, 170, 130, 192)
+    on_art_b    = (20, 210, 130, 232)
+
+    lab_in,  cov_in  = _box_container(terr, in_bubble_a)
+    lab_out, cov_out = _box_container(terr, on_art_a)
+    # Filling the holes is the whole trick: a fragment sitting ON the letters
+    # must still read as inside the bubble, not as a hole in it.
+    check(lab_in > 0 and cov_in > 0.9,
+          "a fragment on the bubble's own letters reads as fully inside it",
+          f"label={lab_in} coverage={cov_in:.2f}")
+    check(cov_out < 0.15,
+          "a fragment on artwork reads as outside every bubble",
+          f"label={lab_out} coverage={cov_out:.2f}")
+
+    dc = _different_containers_separate_boxes
+    check(dc(in_bubble_a, on_art_a, terr),
+          "bubble text vs artwork text is refused")
+    check(not dc(in_bubble_a, in_bubble_b, terr),
+          "two fragments of the SAME bubble are not refused")
+    check(not dc(on_art_a, on_art_b, terr),
+          "two fragments of the same artwork caption are not refused")
+    check(not dc(in_bubble_a, on_art_a, None),
+          "no territory map (segmentation unavailable) never refuses")
+
+    # THE DEAD BAND. A fragment straddling a bubble's edge is ambiguous, and
+    # ambiguity must abstain — the single-cutoff version of this veto refused
+    # such a pair against its own same-bubble neighbour, cutting a line in
+    # half. Verified against the real geometry in test_bubble_outline_tracing.
+    straddle = (60, 190, 260, 212)       # mostly on artwork, right end in the bubble
+    _, cov_s = _box_container(terr, straddle)
+    # Assert against the implementation's OWN band rather than a hand-picked
+    # range: an earlier version of this check used a looser window, which let
+    # a fixture that was actually 84% inside — i.e. confidently in the bubble,
+    # not ambiguous at all — pass as if it were testing the dead band.
+    from mtl.geometry import _CONTAINER_INSIDE, _CONTAINER_OUTSIDE
+    check(_CONTAINER_OUTSIDE < cov_s < _CONTAINER_INSIDE,
+          "the straddling fixture really is in the ambiguous band",
+          f"coverage={cov_s:.2f}, band is {_CONTAINER_OUTSIDE}-{_CONTAINER_INSIDE}")
+    check(not dc(straddle, in_bubble_a, terr),
+          "a straddling fragment is NOT refused against bubble text (abstains)")
+    check(not dc(straddle, on_art_a, terr),
+          "a straddling fragment is NOT refused against artwork text (abstains)")
+
+
 def test_grouping():
     print("\n-- group_fragment_boxes --")
     gfb = _server.group_fragment_boxes
@@ -457,6 +535,7 @@ def main():
     test_vertical_gap_band()
     test_profile_confirms_gap()
     test_veto_seam()
+    test_container_veto()
     test_grouping()
     test_confidence_filter()
     test_line_cluster()

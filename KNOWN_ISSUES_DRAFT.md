@@ -877,14 +877,14 @@ The implementation is recoverable from git history if wanted.
 
 ---
 
-## Confirmed, unfixed: outlined caption text welds to an adjacent bubble because their light regions touch
+## RESOLVED (measured on the real page): text on artwork welded to an adjacent bubble
 
-**Reported** 2026-08-21 from real reading, on the page kept as
+**Reported** 2026-08-21 from real reading, page kept as
 `eval_samples/caption_welds_to_bubble.jpg`. Reproduced at DEFAULT settings —
 RapidOCR, merge sensitivity 0.5.
 
-**Symptom.** The free-floating narration caption and the speech bubble beside
-it come out as ONE region with their sentences interleaved line by line:
+**Symptom.** A free-floating narration caption and the speech bubble beside it
+came out as ONE region with their sentences interleaved line by line:
 
 ```
 REFUERZOSY IUNO DOS TENGO SEGURO LO SIENTO, PERO NO ES.UNEX MÉDICO. MIEMBRO DEL ESCUADRÓN-1
@@ -893,56 +893,82 @@ REFUERZOSY IUNO DOS TENGO SEGURO LO SIENTO, PERO NO ES.UNEX MÉDICO. MIEMBRO DEL
 instead of `DOS REFUERZOS Y UNO ES UN EX MIEMBRO DEL ESCUADRÓN 1` and
 `LO SIENTO, PERO NO TENGO SEGURO MÉDICO.`
 
-**Engine-dependent, and that is a clue rather than a get-out.** EasyOCR reads
-this page correctly at 0.5 — its caption boxes stop at x=270 against the
-bubble's x=282, a 12px gap that survives — and only welds at sensitivity >= 0.7,
-via a different 12px diagonal bridge (`TENGO SEGURO` <-> `ESCUADRÓN -1`).
-RapidOCR's boxes close that to **2px** and it welds at every sensitivity value
-tried (0.3 through 0.7).
+Engine-dependent: EasyOCR read this page correctly at 0.5 (its caption boxes
+stop 12px short of the bubble) and welded only at >= 0.7. RapidOCR's boxes
+close that to **2px** and it welded at every value tried, 0.3 through 0.7.
 
-**Root cause, measured.** The caption's own white letter OUTLINE physically
-touches the bubble's white fill, so `_find_bubble_components` — which segments
-flat/light regions — merges the two into a single connected component (label
-70, spanning x[272,486]). The caption's ink genuinely reaches x=278. They are
-not merely close; they are one light region.
+### Root cause: label 0 means two different things
 
-**Why every existing defence is structurally unable to see it.** All four were
-measured on the real fragments, not reasoned about:
+`_find_bubble_components` labels flat LIGHT regions — bubble fill. Everything
+else is 0, and "everything else" covers two unrelated situations: artwork
+(genuinely outside every bubble) and **the text ink inside a bubble** (letters
+are dark, so they are excluded from the light mask).
+
+`_crosses_bubble_boundary` walks the path between two fragments and refuses
+only when it sees two DIFFERENT components. Measured on this page:
+
+```
+caption -> bubble   [0, 0, 0, 0, 70, 70, 0, 0, 0]   1 component  -> allowed  (WRONG)
+bubble  -> bubble   [0, 0, 0, 0,  0,  0, 0, 0, 0]   0 components -> allowed  (right)
+caption -> caption  [0, 0, 0, 0,  0,  0, 0, 0, 0]   0 components -> allowed  (right)
+```
+
+The middle row is the point: two fragments of the SAME bubble also produce an
+all-zero path, because the line between two stacked text lines runs across
+glyph ink. Zeros are genuinely uninformative, so the veto cannot act on them,
+and between a caption and a bubble it only ever sees one component.
+
+An earlier draft of this entry blamed the caption's white outline for merging
+into the bubble's component. **That was wrong** and is recorded here because it
+is a tempting reading: measured, 99.2% of the caption's white ink is label 0
+and forms no component at all. The two blocks are separate in the map; the
+veto simply could not act on that fact.
+
+### Why nothing else could catch it
 
 | defence | why it cannot fire |
 | --- | --- |
 | margin tuning | the gap is 2px, below `_MIN_MARGIN_PX` (4). No sensitivity value separates them — confirmed across 0.3-0.7. |
-| `detect_column_split` | needs a river >= 3% of region width. 2px over a 443px span measures **0 units** at its 200-step resolution. |
-| `_crosses_bubble_boundary` | it samples the path BETWEEN the boxes, which leaves dark artwork (no component) and enters exactly ONE component. "Outside, then into a bubble" reads as same-bubble, not as a crossing. |
-| polarity | both blocks read light: caption 156-181 mean, bubble 173-199. The caption's outline is thick enough to fill its own box. Ranges overlap; no threshold separates them. |
+| `detect_column_split` | needs a river >= 3% of region width. 2px over a 443px span measures **0 units**. |
+| polarity | both blocks read light: caption mean 156-181, bubble 173-199. The caption's outline fills its own box. Ranges overlap. |
 
-**Two fixes attempted and disproved — do not retry these blind.**
+### Fix: fill the letter-holes, then ask which container the text is in
 
-1. *Per-side component membership.* Replace `_dominant_component_for_box`'s
-   single padded rectangle with four per-side strips, and veto when one
-   fragment is confidently enclosed by a bubble component and the other
-   touches none. Implemented and measured: it **produced false splits inside
-   real bubbles** — `TENGO SEGURO` reported as outside its own bubble, so
-   `PERO NO <-> TENGO SEGURO` was vetoed, cutting one sentence in half. Two
-   independent reasons, both fatal: adjacent text lines fill the side strips
-   with glyph ink (the strip above `TENGO SEGURO` is only 37% component), and
-   the caption box **already overlaps the bubble component by 7px before any
-   padding is applied**, so no sampling radius can separate them.
+`_bubble_territory_map` fills each light component's interior holes — a
+bubble's letters are holes punched in its fill — turning "is this pixel bubble
+FILL" into "is this pixel INSIDE a bubble", which is the question the vetoes
+actually need. `_different_containers_separate_boxes` then refuses a merge
+between text inside a bubble and text on artwork, or between two different
+bubbles.
+
+Hole-filling is what makes the signal usable, and the difference is not
+marginal. Against the raw map, "how enclosed is this fragment" measures 0-14%
+for caption text and 8-71% for bubble text — overlapping, no threshold exists,
+because a fragment mid-bubble is ringed by its neighbouring LETTERS rather
+than by fill. Against the filled map the same measurement is **0-2% versus
+100%** on every fragment of both kinds.
+
+Two thresholds with a dead band, not one cutoff: `_CONTAINER_INSIDE` 0.6,
+`_CONTAINER_OUTSIDE` 0.15, abstain between. The single-cutoff version was
+caught by `test_bubble_outline_tracing.py`'s staggered-lettering regression: a
+fragment STRADDLING a bubble edge measured 47% inside, fell outside the
+cutoff while its same-bubble neighbour fell inside, and the pair was refused —
+cutting one bubble's line in half. A wrongly refused merge is worse than the
+over-merge this prevents, so ambiguity abstains.
+
+### Two fixes attempted and disproved first — do not retry these blind
+
+1. *Per-side component membership on the RAW map.* Sample four strips around
+   each box, veto when one fragment is enclosed and the other touches nothing.
+   Implemented and measured: **produced false splits inside real bubbles** —
+   `TENGO SEGURO` reported as outside its own bubble, so `PERO NO <-> TENGO
+   SEGURO` was refused. Two fatal reasons: neighbouring text lines fill the
+   strips with glyph ink (the strip above `TENGO SEGURO` is only 37%
+   component), and the caption box already overlaps the bubble component by
+   7px before any padding. Hole-filling is what makes this idea work; without
+   it, no sampling geometry does.
 
 2. *Tighten the OCR boxes to real ink.* Assumed RapidOCR pads its detection
    boxes. Measured: it does not. Slack between box edge and rightmost real ink
-   is **1px** on all three caption fragments (5px on the bubble's). The boxes
-   are accurate; the text really is that close.
-
-**The one idea not yet tried.** The bubble has a drawn black border, and it
-runs between the caption and the bubble interior. If `_find_bubble_components`
-carved along that stroke reliably here, the caption's outline would land
-outside the bubble's component and `_crosses_bubble_boundary` would fire
-unaided. It currently does not — component 70 spans right across. Whether that
-is a threshold in `_bubble_outline_mask` or the outline being genuinely broken
-where the caption overlaps it has not been established. Establish that first;
-it is the only remaining signal that is about the page's real structure rather
-than about distance, and distance has been ruled out by measurement.
-
-**Not a fix, but worth knowing:** switching the local engine to EasyOCR reads
-this page correctly at default sensitivity.
+   is **1px** on all three caption fragments. The boxes are accurate; the text
+   really is that close.
