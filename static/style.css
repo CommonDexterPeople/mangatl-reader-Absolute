@@ -1028,6 +1028,29 @@ body {
   border-radius: 3px;
   border: 1px solid var(--border);
 }
+/* Shown only after every automatic retry of a page image has failed — see
+   _markImageFailed in page-render.js. Deliberately inside .img-wrap, which
+   keeps its 150px min-height even with no image, so the button has somewhere
+   to sit on an otherwise empty card. */
+.img-reload {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--bg2);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 3px;
+  padding: 0.45rem 0.8rem;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  line-height: 1.4;
+  cursor: pointer;
+  z-index: 3;
+  transition: background 0.12s;
+}
+.img-reload:hover { background: rgba(255, 58, 58, 0.12); }
+
 .pg-label {
   position: absolute;
   bottom: 8px;
