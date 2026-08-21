@@ -874,3 +874,75 @@ third engine cheap to add, should this be revisited.
      `columpiando`).
 
 The implementation is recoverable from git history if wanted.
+
+---
+
+## Confirmed, unfixed: outlined caption text welds to an adjacent bubble because their light regions touch
+
+**Reported** 2026-08-21 from real reading, on the page kept as
+`eval_samples/caption_welds_to_bubble.jpg`. Reproduced at DEFAULT settings —
+RapidOCR, merge sensitivity 0.5.
+
+**Symptom.** The free-floating narration caption and the speech bubble beside
+it come out as ONE region with their sentences interleaved line by line:
+
+```
+REFUERZOSY IUNO DOS TENGO SEGURO LO SIENTO, PERO NO ES.UNEX MÉDICO. MIEMBRO DEL ESCUADRÓN-1
+```
+
+instead of `DOS REFUERZOS Y UNO ES UN EX MIEMBRO DEL ESCUADRÓN 1` and
+`LO SIENTO, PERO NO TENGO SEGURO MÉDICO.`
+
+**Engine-dependent, and that is a clue rather than a get-out.** EasyOCR reads
+this page correctly at 0.5 — its caption boxes stop at x=270 against the
+bubble's x=282, a 12px gap that survives — and only welds at sensitivity >= 0.7,
+via a different 12px diagonal bridge (`TENGO SEGURO` <-> `ESCUADRÓN -1`).
+RapidOCR's boxes close that to **2px** and it welds at every sensitivity value
+tried (0.3 through 0.7).
+
+**Root cause, measured.** The caption's own white letter OUTLINE physically
+touches the bubble's white fill, so `_find_bubble_components` — which segments
+flat/light regions — merges the two into a single connected component (label
+70, spanning x[272,486]). The caption's ink genuinely reaches x=278. They are
+not merely close; they are one light region.
+
+**Why every existing defence is structurally unable to see it.** All four were
+measured on the real fragments, not reasoned about:
+
+| defence | why it cannot fire |
+| --- | --- |
+| margin tuning | the gap is 2px, below `_MIN_MARGIN_PX` (4). No sensitivity value separates them — confirmed across 0.3-0.7. |
+| `detect_column_split` | needs a river >= 3% of region width. 2px over a 443px span measures **0 units** at its 200-step resolution. |
+| `_crosses_bubble_boundary` | it samples the path BETWEEN the boxes, which leaves dark artwork (no component) and enters exactly ONE component. "Outside, then into a bubble" reads as same-bubble, not as a crossing. |
+| polarity | both blocks read light: caption 156-181 mean, bubble 173-199. The caption's outline is thick enough to fill its own box. Ranges overlap; no threshold separates them. |
+
+**Two fixes attempted and disproved — do not retry these blind.**
+
+1. *Per-side component membership.* Replace `_dominant_component_for_box`'s
+   single padded rectangle with four per-side strips, and veto when one
+   fragment is confidently enclosed by a bubble component and the other
+   touches none. Implemented and measured: it **produced false splits inside
+   real bubbles** — `TENGO SEGURO` reported as outside its own bubble, so
+   `PERO NO <-> TENGO SEGURO` was vetoed, cutting one sentence in half. Two
+   independent reasons, both fatal: adjacent text lines fill the side strips
+   with glyph ink (the strip above `TENGO SEGURO` is only 37% component), and
+   the caption box **already overlaps the bubble component by 7px before any
+   padding is applied**, so no sampling radius can separate them.
+
+2. *Tighten the OCR boxes to real ink.* Assumed RapidOCR pads its detection
+   boxes. Measured: it does not. Slack between box edge and rightmost real ink
+   is **1px** on all three caption fragments (5px on the bubble's). The boxes
+   are accurate; the text really is that close.
+
+**The one idea not yet tried.** The bubble has a drawn black border, and it
+runs between the caption and the bubble interior. If `_find_bubble_components`
+carved along that stroke reliably here, the caption's outline would land
+outside the bubble's component and `_crosses_bubble_boundary` would fire
+unaided. It currently does not — component 70 spans right across. Whether that
+is a threshold in `_bubble_outline_mask` or the outline being genuinely broken
+where the caption overlaps it has not been established. Establish that first;
+it is the only remaining signal that is about the page's real structure rather
+than about distance, and distance has been ruled out by measurement.
+
+**Not a fix, but worth knowing:** switching the local engine to EasyOCR reads
+this page correctly at default sensitivity.
