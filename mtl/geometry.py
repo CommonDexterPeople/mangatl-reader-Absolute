@@ -645,6 +645,141 @@ def _dominant_component_for_box(label_map, box: tuple, pad: int = 14) -> int:
     return int(vals[np.argmax(counts)])
 
 
+def _bubble_territory_map(label_map):
+    """
+    Turn the bubble-fill map into a bubble-TERRITORY map by filling each
+    component's interior holes.
+
+    A bubble's letters are dark, so _find_bubble_components excludes them and
+    they come out as holes punched in that bubble's light region. That makes
+    the raw map answer "is this pixel bubble FILL", when the question the
+    merge vetoes actually need answered is "is this pixel INSIDE a bubble" —
+    and a pixel on a letter is inside one. Filling the holes makes the two the
+    same question.
+
+    Measured on eval_samples/caption_welds_to_bubble.jpg, this is the
+    difference between an unusable signal and a binary one. Against the raw
+    map, "how enclosed is this fragment" scores 0-14% for free-floating
+    caption text and 8-71% for text inside a bubble — overlapping, so no
+    threshold separates them, because a fragment in the middle of a bubble is
+    ringed by its neighbouring LETTERS rather than by fill. Against the filled
+    map the same measurement is 0-2% versus 100% on every fragment of both
+    kinds.
+
+    Holes are found by flood-filling the background inward from the page
+    border: any background not reachable from outside is enclosed by
+    something. Labels are then re-derived on the filled mask, so each
+    territory carries one label — these are NOT the same label values as
+    label_map's, and nothing should assume they are.
+    """
+    if label_map is None:
+        return None
+    mask = (label_map > 0).astype(np.uint8)
+    h, w = mask.shape
+    outside = mask.copy()
+    ff_mask = np.zeros((h + 2, w + 2), np.uint8)
+    # Seed at (0,0). The page corner is background on every real scan; if it
+    # somehow is not, the seed fills nothing and holes stays empty, which
+    # degrades to the raw mask rather than to a wrong answer.
+    cv2.floodFill(outside, ff_mask, (0, 0), 2)
+    holes = (outside == 0)
+    filled = (mask.astype(bool) | holes).astype(np.uint8)
+    n, out = cv2.connectedComponents(filled, connectivity=8)
+    return out
+
+
+def _box_container(territory, box: tuple):
+    """
+    (label, coverage) for the bubble territory this fragment sits in.
+
+    Read from the box's OWN interior, not a padded ring — which is the whole
+    point of using the filled map. Padding outward was what leaked across a
+    2px gap into a neighbouring bubble; a filled territory needs no padding
+    because the fragment's own pixels are already inside it.
+
+    label 0 with coverage 0 means the fragment is on artwork, outside every
+    bubble. That is a real position, not missing information.
+    """
+    if territory is None:
+        return 0, 0.0
+    h, w = territory.shape
+    x1 = max(0, int(box[0])); y1 = max(0, int(box[1]))
+    x2 = min(w, int(box[2])); y2 = min(h, int(box[3]))
+    if x2 <= x1 or y2 <= y1:
+        return 0, 0.0
+    patch = territory[y1:y2, x1:x2]
+    counts = np.bincount(patch.ravel(), minlength=int(territory.max()) + 1)
+    counts[0] = 0
+    if counts.max() == 0:
+        return 0, 0.0
+    return int(counts.argmax()), float(counts.max()) / patch.size
+
+
+# Two thresholds with a DEAD BAND between them, not one cutoff. Confidently
+# inside a bubble is >= _CONTAINER_INSIDE; confidently outside every bubble is
+# <= _CONTAINER_OUTSIDE; anything between is ambiguous and this veto abstains.
+#
+# The single-cutoff version got this wrong and the suite caught it. A fragment
+# STRADDLING a bubble's edge — synthetic staggered-lettering pair in
+# test_bubble_outline_tracing.py, 47% inside — fell on the outside of one
+# cutoff and its same-bubble neighbour on the inside, so a legitimate pair was
+# refused and one bubble's line was cut in half. A wrongly refused merge is
+# worse than the over-merge this exists to prevent, so the middle abstains.
+#
+# The real measurement it was derived from is strongly bimodal (0-2% for
+# free-floating caption text, 100% for text in a bubble, on every fragment of
+# both kinds), so the band is wide and neither number is finely tuned.
+_CONTAINER_INSIDE = 0.6
+_CONTAINER_OUTSIDE = 0.15
+
+
+def _different_containers_separate_boxes(box_a: tuple, box_b: tuple, territory) -> bool:
+    """
+    Refuse a merge between text in a bubble and text outside it — or between
+    text in two different bubbles.
+
+    THE CASE THIS EXISTS FOR (real page, RapidOCR at default sensitivity): a
+    narration caption drawn over artwork sat 2px from a speech bubble, and the
+    two were merged into one region with their sentences interleaved line by
+    line. Every other defence is structurally unable to see it: 2px is below
+    the 4px minimum margin so no sensitivity separates them; the gap measures
+    0 units at detect_column_split's resolution so there is no river; both
+    blocks read "light" so polarity cannot tell them apart.
+
+    _crosses_bubble_boundary cannot see it either, for a subtler reason worth
+    keeping. It samples the path between the two boxes and refuses only when
+    it sees two DIFFERENT components. On this pair the path reads
+    [0,0,0,0,70,70,0,0,0] — one component, so no refusal. It cannot use those
+    zeros, because label 0 is overloaded: it means both "artwork, outside
+    every bubble" AND "inside a bubble, on a letter". Measured on the same
+    page, the path between two fragments of the SAME bubble reads all zeros
+    too. Zeros are genuinely uninformative there.
+
+    Filling the holes is what disambiguates them (see _bubble_territory_map),
+    and that turns "outside every bubble" into a position this can act on.
+    """
+    if territory is None:
+        return False
+    label_a, cov_a = _box_container(territory, box_a)
+    label_b, cov_b = _box_container(territory, box_b)
+
+    in_a = label_a > 0 and cov_a >= _CONTAINER_INSIDE
+    in_b = label_b > 0 and cov_b >= _CONTAINER_INSIDE
+    # "Outside" is about coverage, not about the label. A fragment on artwork
+    # can still report a neighbouring bubble's label from the handful of its
+    # pixels that clip that bubble — on the page this was built against, the
+    # caption fragment nearest the bubble reports the bubble's own label at
+    # 1.7% coverage. Deciding on the label alone would read it as a member.
+    out_a = cov_a <= _CONTAINER_OUTSIDE
+    out_b = cov_b <= _CONTAINER_OUTSIDE
+
+    if in_a and in_b:
+        return label_a != label_b          # both in bubbles, different ones
+    if (in_a and out_b) or (in_b and out_a):
+        return True                        # one in a bubble, one on artwork
+    return False                           # ambiguous — leave it to the others
+
+
 def _waist_separates_boxes(box_a: tuple, box_b: tuple, label_map, cache: dict) -> bool:
     """
     Return True if box_a and box_b sit in two different LOBES of one fused

@@ -28,8 +28,10 @@ and tests that import them from server keep working unchanged.
 """
 
 from mtl.geometry import (
+    _bubble_territory_map,
     _crosses_border,
     _crosses_bubble_boundary,
+    _different_containers_separate_boxes,
     _waist_separates_boxes,
 )
 
@@ -441,13 +443,15 @@ class VetoSet:
     test runs with the waist veto off" visible at the call site.
     """
 
-    __slots__ = ("crosses_border", "crosses_bubble_boundary", "waist_separates")
+    __slots__ = ("crosses_border", "crosses_bubble_boundary", "waist_separates",
+                 "different_containers")
 
     def __init__(self, crosses_border=None, crosses_bubble_boundary=None,
-                 waist_separates=None):
+                 waist_separates=None, different_containers=None):
         self.crosses_border          = crosses_border or _crosses_border
         self.crosses_bubble_boundary = crosses_bubble_boundary or _crosses_bubble_boundary
         self.waist_separates         = waist_separates or _waist_separates_boxes
+        self.different_containers    = different_containers or _different_containers_separate_boxes
 
 
 DEFAULT_VETOES = VetoSet()
@@ -456,7 +460,7 @@ DEFAULT_VETOES = VetoSet()
 def structural_veto(box_a: tuple, box_b: tuple,
                     h_borders: list, v_borders: list,
                     bubble_label_map=None, waist_cache: dict | None = None,
-                    vetoes: "VetoSet | None" = None) -> bool:
+                    vetoes: "VetoSet | None" = None, territory=None) -> bool:
     """
     The three SHAPE-based refusals, checked against the original
     (un-expanded) boxes. True if any one of them blocks the merge.
@@ -481,13 +485,14 @@ def structural_veto(box_a: tuple, box_b: tuple,
     v = vetoes or DEFAULT_VETOES
     return (v.crosses_border(box_a, box_b, h_borders, v_borders)
             or v.crosses_bubble_boundary(box_a, box_b, bubble_label_map)
-            or v.waist_separates(box_a, box_b, bubble_label_map, waist_cache))
+            or v.waist_separates(box_a, box_b, bubble_label_map, waist_cache)
+            or v.different_containers(box_a, box_b, territory))
 
 
 def pair_is_vetoed(box_a: tuple, box_b: tuple,
                    h_borders: list, v_borders: list,
                    bubble_label_map=None, waist_cache: dict | None = None,
-                   gray=None, vetoes: "VetoSet | None" = None) -> bool:
+                   gray=None, vetoes: "VetoSet | None" = None, territory=None) -> bool:
     """
     True if this candidate pair must NOT be merged despite their expanded
     boxes overlapping. Structural (shape) vetoes are checked first because
@@ -496,7 +501,7 @@ def pair_is_vetoed(box_a: tuple, box_b: tuple,
     matters because the profile check is the only one that touches the image.
     """
     if structural_veto(box_a, box_b, h_borders, v_borders,
-                       bubble_label_map, waist_cache, vetoes):
+                       bubble_label_map, waist_cache, vetoes, territory):
         return True
     return gap_profile_veto(gray, box_a, box_b)
 
@@ -539,6 +544,10 @@ def group_fragment_boxes(boxes, img_w: int, img_h: int,
     h_borders = h_borders or []
     v_borders = v_borders or []
     n = len(boxes)
+    # Built once per page, not per pair: it is a flood fill plus a relabel over
+    # the whole map, cheap relative to OCR but not something to repeat O(n^2)
+    # times inside the pair loop below.
+    territory = _bubble_territory_map(bubble_label_map)
     margins_v, margins_h = compute_merge_margins(boxes, img_w, img_h, margin_scale)
     exp = [expand_box(boxes[i], margins_v[i], margins_h[i]) for i in range(n)]
 
@@ -553,7 +562,8 @@ def group_fragment_boxes(boxes, img_w: int, img_h: int,
                 continue
             if pair_is_vetoed(boxes[i][:4], boxes[j][:4],
                               h_borders, v_borders,
-                              bubble_label_map, waist_cache, gray, vetoes):
+                              bubble_label_map, waist_cache, gray, vetoes,
+                              territory):
                 continue
             uf.union(i, j)
 
