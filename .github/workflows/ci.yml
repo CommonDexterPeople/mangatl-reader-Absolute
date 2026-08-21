@@ -60,7 +60,12 @@ jobs:
           sys.modules["mangatl_server"] = m
           spec.loader.exec_module(m)
           for fn in ("_is_allowed_image_host", "_rescue_json_from_reasoning",
-                     "_merge_bubble_regions", "typeset_page"):
+                     "_merge_bubble_regions", "typeset_page",
+                     # Geometry + merge moved to mtl/ but must stay reachable
+                     # from server: every existing test imports them there.
+                     "_find_bubble_components", "_waist_separates_boxes",
+                     "compute_merge_margins", "group_fragment_boxes",
+                     "assemble_region", "VetoSet"):
               assert hasattr(m, fn), f"server.py no longer exposes {fn}"
           print("server.py imported cleanly")
           PY
@@ -82,6 +87,13 @@ jobs:
 
       - name: Adjacent container gap tests (test_adjacent_container_gap.py)
         run: python3 test_adjacent_container_gap.py
+
+      - name: Merge stage unit tests (test_merge_stages.py)
+        # Stage-level cover for mtl/merge.py. The five suites above drive the
+        # whole pipeline and assert on final regions, so any broken stage
+        # shows up there as the same off-by-one region count; this one names
+        # the stage that broke.
+        run: python3 test_merge_stages.py
 
       - name: innerHTML escaping audit (informational — does not fail the build)
         run: python3 audit_innerhtml.py

@@ -135,6 +135,8 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 ├── mtl/                Modules split out of server.py
 │   ├── config.py          Constants shared by server.py and the modules below
 │   ├── security.py        SSRF allowlist, image-body loading, exposure guard
+│   ├── geometry.py        Panel borders, bubble components, fused-bubble waist veto
+│   ├── merge.py           Grouping OCR fragments into one region per bubble
 │   └── inpaint.py         Text erasure: LaMa, OpenCV inpainting, flat fill, smudge pass
 ├── static/
 │   ├── index.html         Page markup only
@@ -150,8 +152,26 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 around line 4,600. The modules there are ordinary imports, so the tests import and
 call the real functions rather than scraping source text. `build.py` **inlines**
 them into the single-file build rather than importing them — so a module in `mtl/`
-may import from an earlier one in `config → security → inpaint` order, but never
-from `server.py` itself, and CI checks the built file has no `mtl` imports left.
+may import from an earlier one in `config → security → geometry → merge → inpaint`
+order, but never from `server.py` itself, and CI checks the built file has no `mtl`
+imports left.
+
+`merge.py` is the one module worth reading before you touch it. It was a single
+739-line `_merge_bubble_regions()` whose margin math, union-find, vetoes, column
+detection and line clustering were all closures — testable only by running the
+whole pipeline and inferring from the region count which stage had broken. Each
+stage is now a module-level function taking explicit arguments; its module
+docstring lists them in the order they run. The algorithm did not change in the
+split (verified by running the old and new implementations against identical
+inputs, including real pages, and diffing the outputs).
+
+One consequence worth knowing: the structural vetoes are reached through a
+`VetoSet`, not called by name. Tests that need to disable exactly one veto — to
+prove the symptom it prevents still reproduces without it — pass an override
+instead of monkeypatching. Monkeypatching cannot work here, because `merge.py`
+binds those functions into its own namespace at import, and it would still
+*appear* to work in the single-file build, where `build.py` flattens every module
+into one shared namespace.
 
 `static/js/` is ES modules. Each file declares what it imports, so load order is
 no longer something you maintain by hand — `index.html` loads exactly one entry
@@ -197,7 +217,7 @@ Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly wh
 ## Known limitations
 
 - Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
-- Five test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, and three bubble-segmentation cases; there's no broader suite beyond those yet, and the bubble tests are synthetic geometry rather than real pages. All five run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
+- Six test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, three bubble-segmentation cases, and the merge pipeline's individual stages; there's no broader suite beyond those yet. The three bubble-segmentation suites are synthetic geometry apart from two checks that run against a real page when `eval_samples/` is present, and the stage tests are synthetic by design — they pin each stage's contract, not the real-page tuning of the constants, which lives in `KNOWN_ISSUES_DRAFT.md`. Nothing covers the routes, the translation providers, or any of `static/js/`. All six run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
 
 ---
 

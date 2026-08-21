@@ -107,10 +107,12 @@ def main():
         print(f"             interleaved region: {mixed[0][:100]}")
 
     # Guard the constant itself: at the old 0.5 this same layout merges.
-    import re, io
-    src = io.open("server.py", encoding="utf-8").read()
-    m = re.search(r"HORIZONTAL_GAP_FACTOR\s*=\s*([0-9.]+)", src)
-    val = float(m.group(1)) if m else None
+    # Read straight off the module. This used to regex it out of server.py's
+    # source text, because it was a local variable inside _merge_bubble_regions
+    # and there was nothing to import. Now that merging lives in mtl/merge.py
+    # it is a real module-level constant, so the test reads the value the code
+    # actually uses rather than a value that merely appears in a source file.
+    val = getattr(_server, "HORIZONTAL_GAP_FACTOR", None)
     within = val is not None and val <= 0.35
     all_pass &= within
     print(f"{'PASS' if within else 'FAIL <<<':8} constant: HORIZONTAL_GAP_FACTOR is {val} "

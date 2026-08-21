@@ -234,12 +234,12 @@ def main():
     # changed the outcome. Leaving it enabled would make this assertion
     # pass or fail for reasons that have nothing to do with outline
     # carving.
-    _real_waist_fn = _server._waist_separates_boxes
-    try:
-        _server._waist_separates_boxes = lambda *a, **k: False
-        regions_old, _ = merge([box_a, box_b], w, h, bubble_label_map=old_lbl, gray=gray)
-    finally:
-        _server._waist_separates_boxes = _real_waist_fn
+    # Disabled via an explicit VetoSet rather than by monkeypatching
+    # _server._waist_separates_boxes — see VetoSet's docstring in mtl/merge.py
+    # for why rebinding server's alias stopped reaching the real call site.
+    _vetoes_no_waist = _server.VetoSet(waist_separates=lambda *a, **k: False)
+    regions_old, _ = merge([box_a, box_b], w, h, bubble_label_map=old_lbl,
+                           gray=gray, vetoes=_vetoes_no_waist)
     ok_old_repro = len(regions_old) == 1
     all_pass &= ok_old_repro
     print(f"{'PASS' if ok_old_repro else 'FAIL <<<':8} companion: full merge pipeline with the "

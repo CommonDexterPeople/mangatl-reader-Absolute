@@ -15,8 +15,8 @@ BUILD NOTE
   server.py and _inline_local_modules() in build.py. That means:
 
     - modules here must be importable in dependency order (config, then
-      security, then inpaint) with no cycles, since inlining is just
-      concatenation; and
+      security, geometry, merge, then inpaint) with no cycles, since
+      inlining is just concatenation; and
     - a module here may import from an EARLIER module in that order, but
       never from server.py itself — server.py imports from these, not the
       reverse.
