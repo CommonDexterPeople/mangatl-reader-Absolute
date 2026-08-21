@@ -130,6 +130,92 @@ document.addEventListener('click', e => {
     btn.dataset.cdn, btn.dataset.img, btn.dataset.lang);
 });
 
+// ══════════════════════════════════════════════
+// PAGE IMAGE RETRY
+// ══════════════════════════════════════════════
+// A page's image and its translation are two INDEPENDENT fetches of the same
+// picture: /ocr hands the raw CDN url to the server, which fetches it
+// server-side, while <img src> points at /proxy and is fetched by the browser
+// (see fetchPageUrls' {cdn, img} pair). So the OCR + translate pass can
+// succeed completely while the display fetch fails on its own — which is
+// exactly what a reader sees as "it says translated, but the page is blank".
+//
+// /proxy turns ANY requests exception into a 502 (its own 20s timeout, an
+// MD@Home node hiccup, or simply losing a connection race against a
+// concurrent ~22s OCR call on the same local server). Until now nothing
+// listened for the resulting error event, so one transient failure left that
+// image broken permanently — no retry, no message, and the page's badges and
+// translation panel rendered normally around the hole, because _pageStore was
+// never involved.
+//
+// The known workaround was to open ✏ CORRECT and close it again, which works
+// only because it replaces card.innerHTML and so builds a BRAND NEW <img>,
+// issuing a fresh request. That it reliably worked is what says the failure is
+// transient rather than a dead URL — so retrying the same src is the actual
+// fix, and this does it automatically instead of making the reader discover
+// the trick.
+const _IMG_RETRY_DELAYS = [400, 1200, 3000];   // ms; length = max attempts
+
+// error does not bubble, so this listens in the CAPTURE phase. One document
+// -level listener covers every page image ever rendered, including cards
+// rebuilt by correction-ui.js and pages appended long after load.
+document.addEventListener('error', e => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  if (!img.matches('.page-img, .page-img-only, .corr-img')) return;
+  _retryPageImage(img);
+}, true);
+
+function _retryPageImage(img) {
+  const attempt = (+img.dataset.imgRetry || 0) + 1;
+  if (attempt > _IMG_RETRY_DELAYS.length) { _markImageFailed(img); return; }
+  img.dataset.imgRetry = attempt;
+
+  // Remember the ORIGINAL src once: retrying off the current value would
+  // stack one cache-buster on top of the last one.
+  const base = img.dataset.imgBase || (img.dataset.imgBase = img.getAttribute('src') || '');
+  if (!base) return;
+
+  setTimeout(() => {
+    // Don't re-request an image the DOM has since thrown away.
+    if (!img.isConnected) return;
+    // A local folder/CBZ page is a blob: url — same-process, never fails for
+    // network reasons, and appending a query string to it produces an invalid
+    // url. Re-assign it untouched; only proxied http(s) srcs get the buster,
+    // which is needed so the browser doesn't just replay its cached 502.
+    const isNetwork = /^(https?:)?\//.test(base);
+    img.src = isNetwork
+      ? base + (base.includes('?') ? '&' : '?') + '_retry=' + attempt
+      : base;
+  }, _IMG_RETRY_DELAYS[attempt - 1]);
+}
+
+function _markImageFailed(img) {
+  const wrap = img.closest('.img-wrap, .corr-img-wrap');
+  if (!wrap || wrap.querySelector('.img-reload')) return;
+  const btn = document.createElement('button');
+  btn.className   = 'img-reload';
+  btn.textContent = '↺ RELOAD IMAGE';
+  btn.title       = 'The page image failed to load. The translation is unaffected — this re-requests just the picture.';
+  btn.onclick = () => {
+    btn.remove();
+    delete img.dataset.imgRetry;
+    _retryPageImage(img);
+  };
+  wrap.appendChild(btn);
+}
+
+// A retry that SUCCEEDS must clear the counter, or three transient failures
+// spread across a long reading session would exhaust the budget and show the
+// manual button on an image that is loading fine.
+document.addEventListener('load', e => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  if (!img.matches('.page-img, .page-img-only, .corr-img')) return;
+  if (img.dataset.imgRetry) delete img.dataset.imgRetry;
+  img.closest('.img-wrap, .corr-img-wrap')?.querySelector('.img-reload')?.remove();
+}, true);
+
 // FIX #2: regions now use translated[j].t for type (was always hardcoded 'speech')
 // FIX #12: uses cdnUrl for OCR, imgSrc for display
 export async function retryPage(btn, el, pageIdx, total, cdnUrl, imgSrc, sourceLang) {

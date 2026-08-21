@@ -225,12 +225,15 @@ def main():
 
         # Companion: with the veto disabled, the same input must reproduce
         # the originally-reported single garbled region.
-        real_fn = _server._waist_separates_boxes
-        try:
-            _server._waist_separates_boxes = lambda *a, **k: False
-            regions_off, _ = merge(frags, w, h, bubble_label_map=label_map, gray=gray)
-        finally:
-            _server._waist_separates_boxes = real_fn
+        # Disabled via an explicit VetoSet rather than by monkeypatching
+        # _server._waist_separates_boxes. Since merging moved to mtl/merge.py,
+        # that module imported the veto into its own namespace, so rebinding
+        # server's alias no longer reaches the call site — and would still
+        # have appeared to work in the flattened single-file build, where the
+        # two names are the same object. See VetoSet's docstring.
+        vetoes_off = _server.VetoSet(waist_separates=lambda *a, **k: False)
+        regions_off, _ = merge(frags, w, h, bubble_label_map=label_map,
+                               gray=gray, vetoes=vetoes_off)
         ok_repro = len(regions_off) == 1
         all_pass &= ok_repro
         print(f"{'PASS' if ok_repro else 'FAIL <<<':8} companion: with the waist veto disabled "
