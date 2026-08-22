@@ -597,11 +597,59 @@ def filter_groups_by_confidence(groups: dict, confidences=None,
 
 # -- Stage 4: reading order within a group -----------------------------------
 
+# Two fragments are on the same line when their vertical CENTRES are within
+# this fraction of a line height. Centres, not box overlap — see
+# cluster_into_lines for the real-page failure that distinction fixes.
+#
+# Scaled by the LARGER of the two heights, not the smaller. A short fragment
+# beside a tall one is still on the tall one's line, and the line's height is
+# the tall one — scaling by the short fragment gives it a tolerance too tight
+# to reach its own line and splits it off. Measured on
+# eval_samples/Vietname pages/Vietname page eng 3.png: 'KA' (h=46) sits beside
+# '加y' (h=113) with baselines 56px apart; min() gives a 23px tolerance and
+# separates them, max() gives 56px and keeps them together. The prose case
+# this constant exists for is unaffected either way — the two consecutive
+# lines in cluster_into_lines' docstring are 18px apart against a 15px
+# tolerance under max(), so they still separate.
+_LINE_CENTRE_TOL = 0.5
+
+
 def cluster_into_lines(boxes, idxs: list) -> list:
     """
-    Group fragment indices into visual LINES by vertical overlap, ordered
-    top-to-bottom. Returns a list of lines, each a list of box indices
-    (unordered within a line — line_cluster sorts those left-to-right).
+    Group fragment indices into visual LINES, ordered top-to-bottom. Returns a
+    list of lines, each a list of box indices (unordered within a line —
+    line_cluster sorts those left-to-right).
+
+    Membership is decided by how far apart two fragments' vertical CENTRES
+    are, measured against a line height. Not by how much their boxes overlap,
+    which is what this did first and is wrong in a way that reliably scrambles
+    real pages: consecutive lines of tightly-set manga lettering overlap
+    plenty, because accents and descenders make boxes taller than the visible
+    line. Measured on eval_samples/another problem 2.jpg:
+
+        'A TRABAJAR'   y[624,651]  h=27  centre 638
+        'DÍA Y NOCHE'  y[640,670]  h=30  centre 655
+
+        box overlap  : 11px of 27px = 0.407, against a 0.40 threshold -> JOINED
+        centre gap   : 18px, about one full line height -> clearly separate
+
+    Two consecutive lines cleared the overlap threshold by 0.7%, were welded
+    into one "line", and ordering then fell through to left-to-right — where a
+    ONE PIXEL difference in left edge (249 vs 248) decided which half of the
+    sentence came first. The bubble read "TE OBLIGARON DÍA Y NOCHE A TRABAJAR"
+    instead of "TE OBLIGARON A TRABAJAR DÍA Y NOCHE".
+
+    No value of the overlap threshold fixes that. Raising it far enough to
+    separate these two splits genuinely same-line words instead, because
+    overlap conflates "sharing a baseline" with "boxes happen to intersect".
+    Centre distance does not: words on one line share a baseline whatever
+    their box heights, and stacked lines differ by a line height.
+
+    The line's centre is recomputed as the MEAN of its members rather than
+    from its min/max extent, so it stays put as the line grows. The extent
+    version stretched toward each new arrival, which let a line chain
+    downward through fragment after fragment — the same page produced one
+    46px "line" where real lines are 26px.
 
     Split out of line_cluster so detect_column_split can ask the same
     question against the same definition of "a line". A candidate column has
@@ -609,23 +657,28 @@ def cluster_into_lines(boxes, idxs: list) -> list:
     that from y-extents alone is precisely what made it misfire (see the
     line-contiguity note in its docstring).
     """
-    items = sorted(idxs, key=lambda i: boxes[i][1])  # seed by top-y
+    items = sorted(idxs, key=lambda i: (boxes[i][1] + boxes[i][3]) / 2.0)
     lines: list[list[int]] = []
+    centres: list[float] = []   # parallel to `lines`: each line's mean y-centre
+    heights: list[float] = []   # parallel to `lines`: each line's mean height
     for i in items:
         y1, y2 = boxes[i][1], boxes[i][3]
+        centre = (y1 + y2) / 2.0
+        height = y2 - y1
         placed = False
-        for line in lines:
-            # Compare against the line's current vertical extent
-            ly1 = min(boxes[k][1] for k in line)
-            ly2 = max(boxes[k][3] for k in line)
-            overlap = min(y2, ly2) - max(y1, ly1)
-            min_h   = min(y2 - y1, ly2 - ly1)
-            if min_h > 0 and overlap / min_h > 0.4:
+        for n, line in enumerate(lines):
+            if abs(centre - centres[n]) <= _LINE_CENTRE_TOL * max(height, heights[n]):
                 line.append(i)
+                # Recompute from the members, so the line's centre stays put as
+                # it grows instead of stretching toward each new arrival.
+                centres[n] = sum((boxes[k][1] + boxes[k][3]) / 2.0 for k in line) / len(line)
+                heights[n] = sum(boxes[k][3] - boxes[k][1] for k in line) / len(line)
                 placed = True
                 break
         if not placed:
             lines.append([i])
+            centres.append(centre)
+            heights.append(height)
     lines.sort(key=lambda line: min(boxes[k][1] for k in line))
     return lines
 
