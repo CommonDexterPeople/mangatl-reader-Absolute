@@ -17,3 +17,13 @@ models/
 # Local OCR test pages — real manga scans, not ours to redistribute.
 # Tests look for them here and skip cleanly when absent.
 eval_samples/
+
+# Eval-run output from eval_ocr_engines.py --json (regenerate by re-running it).
+*_batch_results.json
+
+# PyInstaller / Inno Setup build artefacts (regenerate via packaging/README.md)
+.venv-build/
+packaging/out/
+packaging/work/
+packaging/Output/
+*.spec.bak

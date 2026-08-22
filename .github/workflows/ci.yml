@@ -95,6 +95,12 @@ jobs:
         # the stage that broke.
         run: python3 test_merge_stages.py
 
+      - name: Model registry consistency (test_model_registry.py)
+        # The picker, MODEL_INFO and rates.json must agree about every model.
+        # Pure stdlib text parsing, so it runs alongside the Python tests even
+        # though two of the three files it reads are frontend ones.
+        run: python3 test_model_registry.py
+
       - name: innerHTML escaping audit (informational — does not fail the build)
         run: python3 audit_innerhtml.py
 
