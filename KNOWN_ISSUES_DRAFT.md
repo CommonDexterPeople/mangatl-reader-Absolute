@@ -95,7 +95,18 @@ the mechanism against the real response, and only then patch it.
 
 ---
 
-## Confirmed, blocking: `_merge_bubble_regions` over-merges adjacent bubbles on RapidOCR's fragment output
+## Confirmed, blocking — SINCE RESOLVED: `_merge_bubble_regions` over-merges adjacent bubbles on RapidOCR's fragment output
+
+> **Resolved — pointer added 2026-08-23.** This entry and the three that
+> follow it are the investigation, including two fix attempts that were
+> measured and disproved; read them for the reasoning, not for current
+> status. The bug is fixed. The resolution is further down this file, under
+> "RESOLVED (verified on the real page): fused double-bubble 'waist' veto"
+> and "RESOLVED (measured on 15 real pages, both engines): adjacent text
+> containers merged across a clean gutter", with `test_fused_bubble_waist.py`
+> and `test_adjacent_container_gap.py` as the regression guards. Heading
+> amended because "Confirmed, blocking" was the first thing anyone skimming
+> this file's headings saw.
 
 Unlike the two entries above, this one **was** reproduced directly against
 real output — see below — not constructed. Flagged here rather than fixed

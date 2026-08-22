@@ -123,7 +123,10 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.11+ — this is what CI runs, and what the current dependency set
+  actually resolves against (`numpy` and `onnxruntime` both require 3.11+;
+  `requests`, `pillow` and `torch` require 3.10+). Python 3.9 has been
+  end-of-life since October 2025 and 3.10 reaches it in October 2026.
 - An internet connection (for MangaDex chapters, Vision OCR, and translation)
 - A free **Gemini** API key ([aistudio.google.com](https://aistudio.google.com/app/apikey)) **or** a **DeepSeek** key (roughly $0.02–0.05 per chapter)
 
@@ -147,7 +150,14 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 │                           correction UI, export, MangaDex auth, etc.
 │                           main.js is the entry point; chapter-source.js
 │                           defines the Chapter shape every source produces.
-└── build.py             Reassembles everything into one distributable .py file
+├── packaging/          PyInstaller spec + Inno Setup script for the Windows
+│                         build — see packaging/README.md for what it ships
+│                         and, more importantly, what it deliberately leaves out
+├── requirements.txt    Explicit dependency install, for a venv/container/CI.
+│                         Not needed for the normal path — server.py installs
+│                         what's missing on first run
+├── SECURITY.md         Threat model: what is defended, and what is not
+└── build.py            Reassembles everything into one distributable .py file
 ```
 
 `mtl/` exists because `server.py` had grown to ~6,100 lines with the first route
@@ -182,11 +192,13 @@ point (`main.js`) and a new module just needs importing wherever it's used.
 `main.js` also holds the **global bridge**: `index.html` and a lot of
 JS-generated markup call functions straight from inline `onclick="…"`
 attributes, which resolve against the global scope at click time. Module scope
-isn't global, so `main.js` re-publishes every module's exports onto `window` —
-about 100 of the ~440 top-level names are reachable that way. It's a
-compatibility shim, not the target state: convert inline handlers to
-`addEventListener` or event delegation, then drop modules from that list as
-nothing in the markup calls into them.
+isn't global, so `main.js` re-publishes every module's exports onto `window`.
+That is one `Object.assign` over all 26 module namespaces, so **all 443
+exports** end up global — of which about 103 are actually called from inline
+handlers. The gap between those two numbers is the shim, not the target state.
+To shrink it: convert inline handlers to `addEventListener` or event
+delegation, then drop modules from that `Object.assign` as nothing in the
+markup calls into them.
 
 **Adding a chapter source** (a fourth alongside MangaDex, Suwayomi, and local
 folder/CBZ) means writing one loader in `chapter-source.js` that returns a
