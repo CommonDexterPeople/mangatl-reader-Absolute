@@ -11,6 +11,10 @@
 #   source .venv/bin/activate   # macOS / Linux
 #   pip install -r requirements.txt
 #
+# Needs Python 3.11+ — not a style choice: numpy and onnxruntime both declare
+# requires-python >=3.11, so pip cannot resolve this set on anything older.
+# That is also the version CI runs.
+#
 # Lower bounds, not pins. This is a personal tool that people run against
 # whatever Python they already have, so hard pins would cause more version
 # conflicts than they'd prevent. Bounds are set at "the oldest release known

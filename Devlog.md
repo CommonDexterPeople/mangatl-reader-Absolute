@@ -34,6 +34,16 @@ actually navigate, edit, and get real syntax highlighting for. Nothing about
 └── build.py             Reassembles everything into one distributable .py file.
 ```
 
+> **Update (2026-08-23).** The tree above is the layout as of this entry and
+> has since grown: `static/js/` is 27 modules now, not the 17 listed — the
+> additions are `main.js` (the entry point, which also holds the global
+> bridge), `chapter-source.js`, `suwayomi-api.js`, `glossary.js`,
+> `history.js`, `downloads.js`, `queue.js`, `erase-tool.js`,
+> `paint-brush.js`, `trans-rail.js` and `merge-tuner.js`. `server.py` was
+> also split again, into the `mtl/` package (`config`, `security`,
+> `geometry`, `merge`, `inpaint`). README.md carries the current tree;
+> this one is left as written, being a dated entry.
+
 ## Vision OCR coordinate bug: badges/boxes scattered on flagship models
 
 **Symptom:** with `gemini-3.5-flash` or `gemini-3.1-pro-preview` selected (and
@@ -410,6 +420,15 @@ interleaved into one region on a real Portuguese page), root-caused
 the merge step), not yet fixed. **The frontend engine-selection toggle is
 deliberately not wired live yet because of this** — don't expose a choice
 that can silently produce garbled dialogue.
+
+> **Update (2026-08-23) — both halves of the paragraph above are now out of
+> date.** The bug was fixed, not just worked around: see
+> KNOWN_ISSUES_DRAFT.md, "RESOLVED (measured on 15 real pages, both
+> engines): adjacent text containers merged across a clean gutter", guarded
+> by `test_adjacent_container_gap.py`. The toggle is live —
+> `#local-ocr-engine` in `index.html`, `local_engine` sent on every `/ocr`
+> call, plus a per-chapter recommendation banner. Left the original text
+> standing because this file is a log; the entry was accurate when written.
 
 ## Eval script + first real multi-language batch
 

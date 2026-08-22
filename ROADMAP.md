@@ -7,7 +7,20 @@ past this session — several of these are "we tried the obvious thing and
 it didn't work" results that would be easy to accidentally re-try later
 without this.
 
-## 1. RapidOCR as a second local OCR engine — IN PROGRESS, BLOCKED
+## 1. RapidOCR as a second local OCR engine — SHIPPED
+
+> **Status note (2026-08-23).** This section is chronological, and its
+> earlier paragraphs are superseded — read to the end before acting on
+> anything in it. Both blockers are gone: the frontend engine selector is
+> live (`#local-ocr-engine` in `index.html`, `local_engine` sent on every
+> `/ocr` call), and the over-merge bug that gated it was subsequently
+> *fixed* rather than merely accepted — see KNOWN_ISSUES_DRAFT.md,
+> "RESOLVED (measured on 15 real pages, both engines): adjacent text
+> containers merged across a clean gutter", with `test_adjacent_container_gap.py`
+> as the regression guard. The "do not wire the toggle live" instruction
+> below and the later "accept it as a known limitation" decision are both
+> historical record, not current guidance. The one genuinely open item is
+> the eval script (item 3).
 
 **Decided:** add RapidOCR as a selectable local engine alongside EasyOCR,
 not a replacement for it. Testing showed no single winner:
