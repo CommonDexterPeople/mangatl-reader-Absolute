@@ -1,0 +1,37 @@
+# Dependencies for running from source (`python server.py`).
+#
+# You do NOT need this file for the normal install path: server.py's
+# _bootstrap() installs whatever is missing on first run, and the
+# single-file dist/MangaTL-Reader.py build does the same. This file exists
+# for the cases where you want the install to be explicit and repeatable —
+# a virtualenv, a container, or CI.
+#
+#   python -m venv .venv
+#   .venv/Scripts/activate      # Windows
+#   source .venv/bin/activate   # macOS / Linux
+#   pip install -r requirements.txt
+#
+# Lower bounds, not pins. This is a personal tool that people run against
+# whatever Python they already have, so hard pins would cause more version
+# conflicts than they'd prevent. Bounds are set at "the oldest release known
+# to work here", not at the newest available.
+
+# ── Needed to import server.py at all (module-scope imports) ─────────────────
+flask>=3.0
+requests>=2.31
+opencv-python-headless>=4.8
+numpy>=1.24
+pillow>=10.0
+
+# ── Local OCR engines — loaded lazily, only when a page is actually OCR'd ────
+# Skip both and the server still imports, starts, serves the UI, and runs the
+# geometry/merge tests; it just can't do local OCR. That is exactly how CI
+# installs it (see .github/workflows/ci.yml), which keeps CI off a multi-GB
+# torch download.
+#
+# easyocr pulls in torch (~2-3 GB installed). rapidocr uses onnxruntime
+# instead and bundles a small default model (~30 MB) — much lighter, and the
+# reason it exists here alongside easyocr rather than as a replacement for
+# it (see _run_rapidocr_detection's docstring in server.py).
+easyocr>=1.7
+rapidocr>=3.0

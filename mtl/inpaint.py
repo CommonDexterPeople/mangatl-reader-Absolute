@@ -210,15 +210,28 @@ _lama_infer_lock  = threading.Lock()   # serialises PyTorch inference
 _LAMA_MAX_DIM = 1536
 
 # Where downloaded model checkpoints get cached locally, so re-launching the
-# app doesn't re-download a ~200MB file every time. Didn't already exist
-# anywhere in this file (checked -- only precedent was rates.json using
-# __file__-relative pathing, no dedicated model-cache dir), so defined here
-# following that same pattern rather than inventing a second convention.
-# A "models" subfolder next to server.py -- gets created on first use if
-# missing (see _download_lama_checkpoint's os.makedirs call).
-_MODEL_CACHE_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "models"
-)
+# app doesn't re-download a ~200MB file every time. A "models" subfolder
+# next to the app -- created on first use if missing (see
+# _download_lama_checkpoint's os.makedirs call).
+#
+# "Next to the app" is deliberately NOT __file__ when frozen. A PyInstaller
+# onefile build unpacks itself into a temp dir (sys._MEIPASS) that is
+# DELETED on exit, so a __file__-relative cache would put the checkpoint
+# somewhere guaranteed to be gone by the next launch -- i.e. a fresh ~200MB
+# download every single run, silently. sys.executable is the actual .exe,
+# which is the thing that persists.
+#
+# Override with MTL_MODEL_DIR when the install location isn't writable
+# (Program Files, a read-only mount, a shared install).
+def _default_model_cache_dir() -> str:
+    override = os.environ.get("MTL_MODEL_DIR", "").strip()
+    if override:
+        return override
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "models")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+
+_MODEL_CACHE_DIR = _default_model_cache_dir()
 
 # Anime/manga-finetuned big-lama checkpoint, ~300k manga+anime training
 # images -- same weights IOPaint ships as --model=anime-lama.

@@ -24,6 +24,19 @@ HOW TO RUN
   python audit_innerhtml.py
 """
 
+# This script prints text it scraped out of static/js/*.js, which contains
+# UI glyphs like ✦ and ⏳. On Windows a redirected/piped stdout defaults to
+# the locale codec (cp1252), where those raise UnicodeEncodeError and abort
+# the audit partway through — which is worse than useless for a security
+# tool, since it looks like a clean run that just ended early.
+import sys
+for _s in (sys.stdout, sys.stderr):
+    if _s is not None and hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
 import re
 import sys
 from pathlib import Path

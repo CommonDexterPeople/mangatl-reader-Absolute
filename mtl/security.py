@@ -141,6 +141,12 @@ def _load_image_bytes(body: dict) -> bytes:
 #   ever changed to 0.0.0.0 or a LAN/public address without adding auth in
 #   front of it.
 #
+#   Note "only the local user can reach it" needs one qualifier: a web page
+#   the local user merely has OPEN also counts as local. server.py's
+#   _block_cross_origin() before_request hook is what closes that gap
+#   (cross-origin POSTs and rebound Host headers); it is not authentication,
+#   and everything above about exposing the port still applies.
+#
 # FIX #16 — a printed warning doesn't stop anything; it only helps someone
 #   who reads server output BEFORE the server is already reachable, which
 #   defeats the point for anyone who set HOST and walked away, or who's

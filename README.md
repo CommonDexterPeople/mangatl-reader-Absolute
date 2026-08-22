@@ -97,7 +97,9 @@ and it hands you back the same chapter, readable in your language, in your brows
 ### Built with care for a tool that talks to the internet
 - Image-fetching routes are restricted to an allowlist of MangaDex CDN hosts, not "any `https://` URL" — closes off a server-side request forgery (SSRF) path
 - All externally-sourced text (e.g. scanlation group names from the API) is HTML-escaped before rendering
-- Binds to `127.0.0.1` by default and prints a loud warning if you ever change that, since the server has no built-in authentication of its own
+- Binds to `127.0.0.1` by default, and *refuses to start* on any other address unless you set `MTL_ALLOW_EXPOSED=1` — the server has no authentication of its own, so exposing it has to be a deliberate act rather than an easy-to-miss side effect
+- Rejects cross-origin requests and unexpected `Host` headers, so a random website you happen to have open can't drive the pipeline behind your back (CSRF), and a hostile domain can't re-resolve itself to `127.0.0.1` to read the responses (DNS rebinding)
+  - If you run it behind a reverse proxy, name the hostname(s) the proxy forwards so they aren't rejected: `MTL_ALLOWED_HOSTS=manga.example.com python server.py`
 
 ---
 
@@ -110,8 +112,8 @@ Grab the latest `MangaTL-Reader.py` from this repo's **Releases** page and doubl
 Clone the repo instead. The source is split into readable files, not one multi-thousand-line blob:
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
+git clone https://github.com/CommonDexterPeople/mangatl-reader-Absolute.git
+cd mangatl-reader-Absolute
 python server.py
 ```
 
@@ -217,7 +219,7 @@ Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly wh
 ## Known limitations
 
 - Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
-- Six test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, three bubble-segmentation cases, and the merge pipeline's individual stages; there's no broader suite beyond those yet. The three bubble-segmentation suites are synthetic geometry apart from two checks that run against a real page when `eval_samples/` is present, and the stage tests are synthetic by design — they pin each stage's contract, not the real-page tuning of the constants, which lives in `KNOWN_ISSUES_DRAFT.md`. Nothing covers the routes, the translation providers, or any of `static/js/`. All six run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
+- Seven test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, four bubble-segmentation cases, and the merge pipeline's individual stages; there's no broader suite beyond those yet. The four bubble-segmentation suites are synthetic geometry apart from two checks that run against a real page when `eval_samples/` is present, and the stage tests are synthetic by design — they pin each stage's contract, not the real-page tuning of the constants, which lives in `KNOWN_ISSUES_DRAFT.md`. Nothing covers the routes, the translation providers, or any of `static/js/`. All seven run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
 
 ---
 

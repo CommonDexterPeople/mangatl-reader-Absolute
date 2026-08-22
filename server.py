@@ -38,6 +38,36 @@ import sys
 import subprocess
 import importlib.util
 
+# ─── Console encoding ─────────────────────────────────────────────────────────
+# Every banner below (and the startup line at the bottom of this file) prints
+# box-drawing characters, arrows and check marks. On Windows, sys.stdout only
+# uses UTF-8 when it's attached to a real console — redirect it to a file, pipe
+# it into another program, or run this as a scheduled task/service and Python
+# falls back to the locale codec (cp1252), where every one of those characters
+# raises UnicodeEncodeError and kills the process.
+#
+# That lands worst on exactly the audience the single-file build exists for:
+# the first thing a new user sees is the first-run setup banner, so the crash
+# arrives before a single dependency is installed, as a traceback rather than
+# an error message.
+#
+# errors="replace" rather than a strict re-encode: a mangled arrow in a log
+# file is a cosmetic problem, a dead process is not.
+def _force_utf8_console() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        # Guard: either can be None under pythonw.exe / a frozen GUI build,
+        # and .reconfigure() only exists on TextIOWrapper (3.7+).
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            # Already-detached or non-reconfigurable stream — nothing to do,
+            # and definitely not worth failing startup over.
+            pass
+
+_force_utf8_console()
+
 _REQUIRED = {
     "flask":                  "flask",
     "requests":               "requests",
@@ -66,6 +96,28 @@ def _bootstrap():
     for p in missing:
         print(f"    •  {p}")
     print()
+
+    # Say where these are about to land. sys.prefix diverges from
+    # base_prefix only inside a venv, which is the standard check.
+    #
+    # This stays a WARNING and never a prompt: the whole point of the
+    # single-file build is that someone can double-click it without knowing
+    # what a virtualenv is, and blocking on a question they can't answer
+    # would break the one audience it exists for. But installing easyocr
+    # means pulling torch into whatever interpreter this happens to be —
+    # a few GB in someone's system Python, which they deserve to be told
+    # about while it is still happening rather than discover later.
+    if sys.prefix == getattr(sys, "base_prefix", sys.prefix):
+        print("  ⚠️   Note: this is not a virtualenv, so these install into")
+        print(f"  ⚠️   your main Python ({sys.executable}).")
+        print("  ⚠️   easyocr pulls in torch — expect a few GB. To keep it")
+        print("  ⚠️   isolated instead, Ctrl+C now and run:")
+        print()
+        print("        python -m venv .venv")
+        print("        .venv/Scripts/activate       (Windows)")
+        print("        source .venv/bin/activate    (macOS/Linux)")
+        print("        pip install -r requirements.txt")
+        print()
     print("  EasyOCR includes a language model (~100–400 MB).")
     print("  RapidOCR bundles a small default model in the package itself")
     print("  (~30 MB) — no separate download for most languages.")
@@ -103,7 +155,13 @@ def _bootstrap():
 # and torch are deliberately NOT among them: those load lazily inside
 # _get_reader() / _get_rapidocr_engine() / _get_lama_engine(), so a test that
 # only touches geometry or parsing never pays their install/import cost.
-if __name__ == "__main__":
+# getattr(sys, "frozen", False) is what PyInstaller/Nuitka set on the running
+# module. A frozen build already CONTAINS its dependencies, and the exe has no
+# pip (often no Python on the machine at all), so running the bootstrap there
+# would shell out to something that isn't present and fail loudly on a machine
+# where everything is actually fine. See packaging/ for what the frozen build
+# ships and what it deliberately leaves out.
+if __name__ == "__main__" and not getattr(sys, "frozen", False):
     _bootstrap()
 
 # ─── All other imports (safe after bootstrap) ─────────────────────────────────
@@ -147,6 +205,7 @@ GEMINI_API    = "https://generativelanguage.googleapis.com/v1beta/models/{model}
 from mtl.config import USER_AGENT
 from mtl.security import (
     SUWAYOMI_HOST,
+    _LOCALHOST_ADDRS,
     _check_exposure_or_exit,
     _is_allowed_image_host,
     _load_image_bytes,
@@ -223,6 +282,50 @@ from mtl.inpaint import (
 #   en, es, fr, it, pt, pt-br, nl, de, sv, da, fi, no, id, ms, tr
 #
 # vision_mode='all' bypasses this set entirely.
+# ─── Which local OCR engines this build actually contains ────────────────────
+# Both engines are optional and lazily imported (_get_reader /
+# _get_rapidocr_engine), so "installed" is a runtime question, not a constant.
+# It stopped being hypothetical with the packaged Windows build, which ships
+# RapidOCR only: easyocr pulls in torch/scipy/scikit-image (~690MB of the
+# ~980MB total) AND still downloads its language model on first use, so a
+# bundle containing it is both huge and not actually offline.
+#
+# Order is preference order: when a build has both, easyocr stays the default,
+# exactly as it was when that default was hardcoded in three places.
+_LOCAL_ENGINES = ("easyocr", "rapidocr")
+
+def _local_engine_installed(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        # find_spec raises rather than returning None for some half-present
+        # packages; treat anything it can't resolve as absent.
+        return False
+
+AVAILABLE_LOCAL_ENGINES = tuple(e for e in _LOCAL_ENGINES if _local_engine_installed(e))
+DEFAULT_LOCAL_ENGINE    = AVAILABLE_LOCAL_ENGINES[0] if AVAILABLE_LOCAL_ENGINES else None
+
+def _resolve_local_engine(requested: str) -> str:
+    """Map a requested engine name onto one this build can actually run.
+
+    Unknown values fall back to the default rather than 500ing, which is the
+    behaviour the three hardcoded call sites had before. A KNOWN engine that
+    simply isn't in this build falls back the same way instead of raising
+    ModuleNotFoundError from inside the lazy import — the response already
+    reports which engine really ran (see engine_label / the OCR engine badge),
+    so this is visible to the user rather than silent."""
+    r = (requested or "").strip().lower()
+    if r in AVAILABLE_LOCAL_ENGINES:
+        return r
+    if DEFAULT_LOCAL_ENGINE:
+        return DEFAULT_LOCAL_ENGINE
+    # Vision-only build (or a broken install): no local engine at all. Say so
+    # plainly -- the alternative is a ModuleNotFoundError traceback that looks
+    # like a crash rather than a missing optional feature.
+    abort(503, "This build has no local OCR engine installed. "
+               "Use Gemini Vision OCR (needs a Gemini API key), or install "
+               "easyocr or rapidocr.")
+
 VISION_LANGS = {
     # Complex / vertical scripts
     'ja', 'zh', 'zh-hk', 'ko', 'ar', 'th',
@@ -239,6 +342,81 @@ app = Flask(__name__, static_folder="static", static_url_path="/static")
 # oversized body is rejected before Flask/Werkzeug bothers buffering and
 # JSON-parsing it.
 app.config["MAX_CONTENT_LENGTH"] = 40 * 1024 * 1024  # 40MB — base64 overhead + JSON framing headroom
+
+
+# ─── Cross-origin / DNS-rebinding guard ──────────────────────────────────────
+# Every route here is unauthenticated by design (see mtl/security.py) — that
+# is fine for a localhost tool, but "localhost" is not the isolation boundary
+# it looks like:
+#
+#   1. CSRF. Every POST route parses its body with get_json(force=True), so it
+#      accepts Content-Type: text/plain. That is a CORS "simple request", so
+#      any page in the user's browser can POST to this server with no
+#      preflight. Confirmed reachable before this guard existed.
+#   2. DNS rebinding. A hostile domain that re-resolves to 127.0.0.1 becomes
+#      same-origin, at which point it can also READ every response.
+#
+# The damage ceiling is low — API keys arrive in the request body rather than
+# living on the server, and nothing here writes to disk — but "an arbitrary
+# website can drive your OCR pipeline" is still not a property this should
+# have, and the fix is a header check.
+#
+# Deliberately permissive in two directions, so this hardens the browser
+# threat model without breaking real use:
+#   • A MISSING Origin is allowed. curl, scripts and the export tooling
+#     mentioned in export_chapter()'s docstring send none, and a browser
+#     always sends one on a cross-origin POST — so requiring it would break
+#     legitimate non-browser callers while catching nothing extra.
+#   • When the operator has knowingly exposed the server (non-localhost HOST
+#     plus MTL_ALLOW_EXPOSED=1), the Host check steps aside: at that point
+#     they are reaching it by LAN IP or hostname on purpose, and enforcing
+#     "Host must be localhost" would reject every request they make.
+_ALLOWED_ORIGIN_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+# Escape hatch for the setup the exposure warning itself recommends: this
+# server on 127.0.0.1 with a reverse proxy in front of it doing the auth.
+# nginx & friends default to forwarding the ORIGINAL Host header
+# (proxy_set_header Host $host), so the browser's "manga.example.com" arrives
+# here verbatim and the rebinding check above would reject every proxied
+# request. Naming those hostnames is the opt-in that distinguishes "my proxy
+# sends this" from "an attacker's domain resolved to 127.0.0.1".
+#
+#   MTL_ALLOWED_HOSTS=manga.example.com,192.168.1.50 python server.py
+_ALLOWED_ORIGIN_HOSTS |= {
+    h.strip().lower().strip("[]")
+    for h in os.environ.get("MTL_ALLOWED_HOSTS", "").split(",")
+    if h.strip()
+}
+
+def _host_only(value: str) -> str:
+    """Strip scheme, port and brackets down to a bare hostname for comparison."""
+    v = (value or "").strip().lower()
+    if "//" in v:
+        v = v.split("//", 1)[1]
+    v = v.split("/", 1)[0]
+    if v.startswith("["):                       # IPv6 literal, e.g. [::1]:8080
+        return v[: v.find("]") + 1].strip("[]") if "]" in v else v.strip("[]")
+    return v.rsplit(":", 1)[0] if ":" in v else v
+
+@app.before_request
+def _block_cross_origin():
+    exposed_on_purpose = (
+        HOST not in _LOCALHOST_ADDRS
+        and os.environ.get("MTL_ALLOW_EXPOSED", "").strip() == "1"
+    )
+
+    # DNS-rebinding guard: the browser only reaches us as localhost, so any
+    # other Host header means the request was routed here under a name we
+    # never serve — the signature of a rebinding attack.
+    if not exposed_on_purpose:
+        if _host_only(request.headers.get("Host", "")) not in _ALLOWED_ORIGIN_HOSTS:
+            abort(403, "Unexpected Host header — refusing possible DNS-rebinding request.")
+
+    # CSRF guard: a present-and-foreign Origin is a cross-site request.
+    origin = request.headers.get("Origin", "")
+    if origin and _host_only(origin) not in _ALLOWED_ORIGIN_HOSTS:
+        if not exposed_on_purpose:
+            abort(403, "Cross-origin requests are not accepted.")
 
 # ─── MangaDex language code → EasyOCR language list ──────────────────────────
 _LANG_MAP = {
@@ -2038,6 +2216,14 @@ def _recommend_local_engine(lang: str, current: str):
     engine, reason = rec
     if engine == current:
         return None
+    # Never recommend an engine this build doesn't contain. The packaged
+    # Windows build ships RapidOCR only, where the 'vi' entry below would
+    # otherwise tell the user to switch to EasyOCR — advice they cannot act
+    # on, for a picker option that isn't there. Caught by running the actual
+    # frozen build, not by any test: on a full source install both engines
+    # are present and this branch never fires.
+    if engine not in AVAILABLE_LOCAL_ENGINES:
+        return None
     return engine, reason
 
 
@@ -2308,7 +2494,13 @@ def get_rates():
     build just also has a working fallback if they never do that.
     """
     import json as _json
-    rates_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rates.json")
+    # Next to the EXE when frozen, not next to __file__: a PyInstaller
+    # onefile build's __file__ lives in a temp dir that is wiped on exit, so
+    # the "drop a rates.json beside the app to override" promise below would
+    # be impossible to actually use. Same reasoning as _MODEL_CACHE_DIR.
+    _base = os.path.dirname(os.path.abspath(
+        sys.executable if getattr(sys, "frozen", False) else __file__))
+    rates_path = os.path.join(_base, "rates.json")
     try:
         with open(rates_path, "r", encoding="utf-8") as f:
             return jsonify(_json.load(f))
@@ -3051,9 +3243,7 @@ def ocr_recommendation():
     Response: { "local_engine_recommendation": {"engine": ..., "reason": ...} | null }
     """
     lang         = request.args.get("lang", "en").lower()
-    local_engine = request.args.get("local_engine", "easyocr").strip().lower()
-    if local_engine not in ("easyocr", "rapidocr"):
-        local_engine = "easyocr"   # unrecognised value — fail safe to the default, not a 500
+    local_engine = _resolve_local_engine(request.args.get("local_engine", ""))
     return jsonify({"local_engine_recommendation": _recommend_local_engine(lang, local_engine)})
 
 
@@ -3064,7 +3254,9 @@ def ocr_page():
                   "ai_key": "AIza…",          # optional — enables Gemini Vision OCR
                   "ai_model": "gemini-2.5-flash",
                   "vision_mode": "smart",     # 'smart' | 'all' | 'off'  (default: 'smart')
-                  "local_engine": "easyocr" } # 'easyocr' | 'rapidocr'  (default: 'easyocr')
+                  "local_engine": "easyocr" } # 'easyocr' | 'rapidocr'
+                                    #   (default: whichever this build has —
+                                    #    see DEFAULT_LOCAL_ENGINE)
     Response:   { "regions": [{ "text": "…", "cx": 45.2, "cy": 23.1 }, …] }
 
     local_engine picks which LOCAL engine runs — either as the only OCR
@@ -3115,9 +3307,7 @@ def ocr_page():
     ai_key       = body.get("ai_key",       "").strip()
     ai_model     = body.get("ai_model",     "gemini-2.5-flash").strip()
     vision_mode  = body.get("vision_mode",  "smart").strip().lower()  # 'smart' | 'all' | 'off'
-    local_engine = body.get("local_engine", "easyocr").strip().lower()  # 'easyocr' | 'rapidocr'
-    if local_engine not in ("easyocr", "rapidocr"):
-        local_engine = "easyocr"   # unrecognised value — fail safe to the default, not a 500
+    local_engine = _resolve_local_engine(body.get("local_engine", ""))
     _run_local_detection = (
         _run_rapidocr_detection if local_engine == "rapidocr" else _run_easyocr_detection
     )

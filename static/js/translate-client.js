@@ -20,6 +20,7 @@ export const VALID_TEXT_TYPES = new Set(['speech', 'thought', 'sfx', 'narration'
 export const MODEL_INFO = {
   // Gemini models
   'gemini|gemini-3.5-flash':              { provider: 'gemini',   placeholder: 'AIza…', label: 'Gemini 3.5 Flash',       keyUrl: 'https://aistudio.google.com/app/apikey', keySite: 'aistudio.google.com' },
+  'gemini|gemini-3.6-flash':              { provider: 'gemini',   placeholder: 'AIza…', label: 'Gemini 3.6 Flash',       keyUrl: 'https://aistudio.google.com/app/apikey', keySite: 'aistudio.google.com' },
   'gemini|gemini-3.1-flash-lite':         { provider: 'gemini',   placeholder: 'AIza…', label: 'Gemini 3.1 Flash-Lite',  keyUrl: 'https://aistudio.google.com/app/apikey', keySite: 'aistudio.google.com' },
   'gemini|gemini-2.5-flash':              { provider: 'gemini',   placeholder: 'AIza…', label: 'Gemini 2.5 Flash',       keyUrl: 'https://aistudio.google.com/app/apikey', keySite: 'aistudio.google.com' },
   // Gemini models (paid flagship)
