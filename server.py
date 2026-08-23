@@ -3582,11 +3582,28 @@ def ocr_crop():
     except Exception as e:
         abort(422, f"Image decode/crop error: {e}")
 
-    # OCR the crop (serialised)
+    # OCR the crop (serialised), on whichever local engine this build has.
+    #
+    # This used to call _get_reader() unconditionally, which is fine on a
+    # source install but returns a 500 ("No module named 'easyocr'") on the
+    # packaged Windows build, where RapidOCR is the only engine present --
+    # breaking the Correct UI's "draw a new region" for every user of that
+    # build. Reproduced against the real exe before this fix.
+    #
+    # _resolve_local_engine() honours an explicit local_engine in the body if
+    # the caller sends one (the frontend does not today) and otherwise picks
+    # this build's default, so the two engines stay interchangeable here the
+    # same way they are on /ocr.
+    engine_name = _resolve_local_engine(body.get("local_engine", ""))
     try:
-        reader = _get_reader(lang)
-        with _infer_lock:
-            fragments, frag_confidences = _easyocr_readtext_primary(reader, arr, lang)
+        if engine_name == "rapidocr":
+            engine = _get_rapidocr_engine()
+            with _infer_lock:
+                fragments, frag_confidences = _rapidocr_readtext_primary(engine, arr, lang)
+        else:
+            reader = _get_reader(lang)
+            with _infer_lock:
+                fragments, frag_confidences = _easyocr_readtext_primary(reader, arr, lang)
     except Exception as e:
         abort(500, f"OCR failed: {e}")
 
@@ -3594,7 +3611,7 @@ def ocr_crop():
     # to cluster) so min_conf applies directly here rather than being
     # deferred the way _run_easyocr_detection defers it to
     # _merge_bubble_regions. The short-word carve-out was already applied
-    # inside _easyocr_readtext_primary.
+    # inside whichever *_readtext_primary ran above.
     min_conf = _MIN_CONF_MAP.get(lang, 0.35)
     texts = [text for (_, text), conf in zip(fragments, frag_confidences)
              if conf >= min_conf or len(text) <= 2]
