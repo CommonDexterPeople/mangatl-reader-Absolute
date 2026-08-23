@@ -23,7 +23,7 @@ FIRST RUN
   The browser opens as soon as the server is ready.
 
 REQUIREMENTS
-  Python 3.9+  ·  Internet connection  ·  A Gemini or DeepSeek API key
+  Python 3.11+  ·  Internet connection  ·  A Gemini or DeepSeek API key
 
 API KEYS (free options)
   Gemini  → https://aistudio.google.com/app/apikey  (free tier, no credit card)
