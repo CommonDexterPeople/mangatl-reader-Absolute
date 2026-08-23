@@ -28,6 +28,10 @@ jobs:
     name: Build the exe and exercise it
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      # Needed only by the release step below. Everything else here
+      # reads, so this is the narrowest grant that still works.
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -73,3 +77,83 @@ jobs:
           name: MangaTL-Reader-windows
           path: packaging/out/MangaTL-Reader
           retention-days: 14
+
+      # ── Installer ────────────────────────────────────────────────────────
+      # Deliberately runs on workflow_dispatch as well as on tags. If it only
+      # ran on tags, the first time anyone found out the .iss was broken would
+      # be the tag that was supposed to produce a release -- and unpicking a
+      # bad tag is far more annoying than a failed manual run. This way the
+      # installer is provably buildable before any tag exists.
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build the installer
+        # Version comes from the tag (v1.2.3 -> 1.2.3) so the installer's
+        # Add/Remove Programs entry matches the release. Falls back to the
+        # .iss default on a manual run, where there is no tag.
+        run: |
+          $ver = if ($env:GITHUB_REF -like 'refs/tags/v*') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '0.0.0-dev' }
+          Write-Output "building installer version $ver"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=$ver packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
+          Get-ChildItem packaging/Output
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: MangaTL-Reader-Setup
+          path: packaging/Output/*.exe
+          retention-days: 14
+
+      # ── Release (tags only) ──────────────────────────────────────────────
+      - name: Create the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Draft, always: artifacts attached and notes written, but a human
+        # decides when it goes public. Re-running on the same tag updates the
+        # existing draft's assets rather than failing, so a re-run is never a
+        # dead end.
+        #
+        # The notes use a LITERAL here-string (@'...'@). A double-quoted one
+        # would treat every backtick as an escape character and quietly eat
+        # the markdown code spans below.
+        #
+        # No --generate-notes: it generates a title too, which fights --title.
+        # The draft UI has a "Generate release notes" button if you want the
+        # commit list appended by hand.
+        run: |
+          $notes = @'
+          ## Downloads
+
+          | File | For |
+          |---|---|
+          | `MangaTL-Reader-Setup.exe` | **Windows, most people.** Installs to your user profile with a Start Menu shortcut, no admin prompt. Ready to read immediately — no dependency install, no model download. |
+          | `MangaTL-Reader.py` | **Any OS with Python 3.11+.** Double-click it, or `python MangaTL-Reader.py`. First run installs its own dependencies (a few minutes — EasyOCR pulls in PyTorch); EasyOCR then fetches a language model the first time you OCR a page. |
+
+          Both need a free **Gemini** or **DeepSeek** API key for translation — see the README.
+
+          **Windows will warn about an unknown publisher.** The installer is unsigned (a certificate is an annual cost this project does not carry): choose **More info → Run anyway**.
+
+          The installer ships **RapidOCR only**; the `.py` build also includes EasyOCR. `packaging/README.md` explains the trade.
+
+          Every file here was built and smoke-tested by CI on this tag.
+          '@
+          # WriteAllText with UTF8Encoding($false) rather than Out-File:
+          # Out-File -Encoding utf8 emits a BOM under Windows PowerShell,
+          # and gh would paste that BOM into the release notes as a stray
+          # character. This writes the same bytes under either shell.
+          [System.IO.File]::WriteAllText("$PWD/notes.md", $notes, (New-Object System.Text.UTF8Encoding $false))
+
+          $installer = (Get-ChildItem packaging/Output/*.exe | Select-Object -First 1).FullName
+          if (-not $installer) { throw "no installer found in packaging/Output" }
+          Write-Output "attaching: $installer"
+
+          gh release view $env:GITHUB_REF_NAME --json id *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Output "release $env:GITHUB_REF_NAME exists - replacing assets"
+            gh release upload $env:GITHUB_REF_NAME $installer dist/MangaTL-Reader.py --clobber
+          } else {
+            gh release create $env:GITHUB_REF_NAME --draft --title "MangaTL Reader $env:GITHUB_REF_NAME" --notes-file notes.md $installer dist/MangaTL-Reader.py
+          }
+          if ($LASTEXITCODE -ne 0) { throw "gh release failed with $LASTEXITCODE" }
