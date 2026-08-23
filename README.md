@@ -111,7 +111,29 @@ and it hands you back the same chapter, readable in your language, in your brows
 ## Getting started
 
 **Just want to read something?**
-Grab the latest `MangaTL-Reader.py` from this repo's **Releases** page and double-click it (or run `python MangaTL-Reader.py`). It auto-installs its own dependencies on first run — this takes a few minutes since EasyOCR downloads a language model — and opens your browser automatically once it's ready.
+
+> **No release is published yet** — the Releases page is empty, so for now both
+> builds below are made from a clone. `python build.py` produces the single-file
+> `dist/MangaTL-Reader.py`; [packaging/README.md](packaging/README.md) covers the
+> Windows installer. Once a release is cut, they'll be downloads rather than
+> build steps and the rest of this section applies as written.
+
+Two builds, whose first-run cost is very different:
+
+| | Windows installer | `MangaTL-Reader.py` (any OS) |
+|---|---|---|
+| Install | Next-next-finish, Start Menu shortcut | Double-click the file, or `python MangaTL-Reader.py` |
+| First run | **Ready immediately** | **A few minutes** — installs its own dependencies |
+| First page you OCR | Ready immediately | **~100–400 MB** — EasyOCR fetches its language model |
+| OCR engines | RapidOCR + Gemini Vision | EasyOCR + RapidOCR + Gemini Vision |
+
+The single-file build installs EasyOCR, which pulls in PyTorch — that is the
+bulk of those few minutes, not the language model, which is fetched separately
+and later. The installer carries RapidOCR's models inside it and needs neither
+step, at the cost of not having EasyOCR at all
+(see [packaging/README.md](packaging/README.md) for why that trade is worth it).
+
+Both costs are one-time either way; later runs start in seconds.
 
 **Want to edit, extend, or contribute?**
 Clone the repo and see **[CONTRIBUTING.md](CONTRIBUTING.md)**:
@@ -122,10 +144,10 @@ cd mangatl-reader-Absolute
 python server.py
 ```
 
-**First run takes a few minutes.** It installs its own dependencies, and EasyOCR
-downloads a language model (~100–400 MB) the first time you OCR a page. That is
-a one-time cost — later runs start in seconds. The browser opens on its own when
-the server is ready.
+Running from source has the same first-run cost as the single-file build: it
+installs what's missing on startup (PyTorch being most of it), and EasyOCR
+fetches its language model the first time you actually OCR a page — not at
+startup. The browser opens on its own when the server is ready.
 
 **Then you need an API key.** Translation is the one part that isn't local:
 
