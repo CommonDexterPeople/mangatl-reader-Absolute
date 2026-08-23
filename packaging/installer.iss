@@ -17,7 +17,12 @@
 ;   It is also markedly less likely to be quarantined than a onefile exe.
 
 #define AppName        "MangaTL Reader"
-#define AppVersion     "1.0.0"
+; Overridable from the command line so the installer version tracks the git
+; tag that produced it: ISCC.exe /DAppVersion=1.2.3 installer.iss
+; The #ifndef is what makes /D win -- a bare #define would overwrite it.
+#ifndef AppVersion
+  #define AppVersion   "1.0.0"
+#endif
 #define AppPublisher   "CommonDexterPeople"
 #define AppURL         "https://github.com/CommonDexterPeople/mangatl-reader-Absolute"
 #define AppExeName     "MangaTL-Reader.exe"
