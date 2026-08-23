@@ -212,6 +212,7 @@ from mtl.security import (
     _validate_image_url,
 )
 from mtl.geometry import (
+    _WAIST_MIN_INTERIOR_PX,
     _WAIST_MIN_SPAN_PX,
     _WAIST_RATIO_THRESHOLD,
     _bubble_outline_mask,
@@ -2165,15 +2166,18 @@ def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
                                     h_borders, v_borders, bubble_label_map,
                                     gray_orig, margin_scale)
 # Provisional per-language local-engine guidance — NOT a hard routing rule.
-# Based on one real manga page per language (es/pt/vi/tr), tested manually
-# in one session — see Devlog "RapidOCR: second local OCR engine" for the
-# actual transcriptions this is based on. This is a starting point to
-# surface as a *suggestion* the user can accept or dismiss (see
-# _recommend_local_engine below and the frontend banner it powers), not a
-# conclusion strong enough to hard-code as automatic routing the way
-# VISION_LANGS is. Replace this dict's contents once the planned eval
-# script (run across a real folder of sample pages per language, not one
-# page each) produces real accept/drop/accuracy numbers — see Devlog.
+# Mixed provenance, and the entries are not equally strong:
+#   - es / es-la come from a real 59-page, two-chapter sample scored against
+#     hand-read ground truth (ES_LA_OCR_EVAL.md). This is the standard the
+#     rest of the dict should be raised to.
+#   - pt / vi / ko come from one real manga page each, tested manually in one
+#     session — see Devlog "RapidOCR: second local OCR engine" for the actual
+#     transcriptions they are based on.
+# Either way these are surfaced as a *suggestion* the user can accept or
+# dismiss (see _recommend_local_engine below and the frontend banner it
+# powers), not as automatic routing the way VISION_LANGS is. Replace the
+# remaining one-page entries as the eval script (run across a real folder of
+# sample pages per language) produces real accuracy numbers for them too.
 _LOCAL_ENGINE_RECOMMENDATION = {
     # lang: (recommended_engine, one-line reason shown in the UI banner)
     'vi': ('easyocr',  "RapidOCR tends to drop or swap Vietnamese tone marks "
@@ -2187,6 +2191,29 @@ _LOCAL_ENGINE_RECOMMENDATION = {
                         "harder rule than the others: Korean already routes to "
                         "Vision by default (see VISION_LANGS), but if Vision "
                         "ever falls back, the local fallback must be EasyOCR."),
+    # es / es-la: the first entry here backed by a real multi-page sample
+    # rather than one page — 59 pages, both engines, scored against 5
+    # hand-read pages. See ES_LA_OCR_EVAL.md for the full numbers.
+    # RapidOCR: 89.3% exact word recall vs EasyOCR's 79.1%, 3.5x faster,
+    # and half the spurious output. The headline is the inverted question
+    # mark: across 59 pages EasyOCR read '¿' correctly ZERO times (it
+    # reads it as 'E' and welds it to the next word — '¿PARA' -> 'EPARA'),
+    # against RapidOCR's 65. A confidence filter cannot catch that, because
+    # 'EPARA' is a confidently-read wrong answer.
+    # Both keys are spelled out: _recommend_local_engine looks up the raw
+    # chapter language, so 'es-la' does NOT inherit from 'es'.
+    'es': ('rapidocr', "EasyOCR misreads the inverted '¿' as 'E' on Spanish "
+                        "pages (0 read correctly across 59 tested); RapidOCR "
+                        "reads it, and was more accurate overall."),
+    'es-la': ('rapidocr', "EasyOCR misreads the inverted '¿' as 'E' on Spanish "
+                        "pages (0 read correctly across 59 tested); RapidOCR "
+                        "reads it, and was more accurate overall."),
+    # Caveat worth keeping with the es entries: NEITHER engine reads the
+    # opening '¡' — zero occurrences in 59 pages, both degrade it to 'i'/'I'
+    # and fuse it into the following word ('¡ESTÁ BIEN!' -> 'iESTÁ BIENI').
+    # This recommendation picks the better engine; it does not make Spanish
+    # a solved language. Spanish is also not in VISION_LANGS, so there is no
+    # Vision fallback to absorb it.
     # id: RapidOCR read a real Indonesian page cleanly (correct on 'AKU',
     # 'KALAU', 'ITU', 'NUANSA'); EasyOCR on the same page introduced a
     # systematic U-misread-as-L/V across most of those same words, but
@@ -2196,7 +2223,7 @@ _LOCAL_ENGINE_RECOMMENDATION = {
     # Korean's near-total failure was an obvious call. Worth another page
     # or two before adding an entry here.
     #
-    # es, tr, and everything else not listed: too close to call on the
+    # tr, and everything else not listed: too close to call on the
     # sample tested so far — no recommendation is surfaced (see
     # _recommend_local_engine).
 }

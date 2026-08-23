@@ -27,7 +27,11 @@ USAGE:
 
 FILENAME CONVENTION:
     <lang>_<anything>.{jpg,png,...}   e.g. es_redopin_1.jpg, ko_webtoon_1.jpg
-    The two-letter prefix before the first underscore is used as the `lang`
+    <lang> may carry a region suffix — es-la_ch65_p05.png, pt-br_…, zh-hk_… —
+    and it matters: the pipeline keys _MIN_CONF_MAP, VISION_LANGS and
+    _LOCAL_ENGINE_RECOMMENDATION on the raw chapter language, so 'es-la' is
+    not interchangeable with 'es'.
+    The prefix before the first underscore is used as the `lang`
     argument to both detection functions and as the min_conf lookup key.
     Files that don't match this pattern are skipped with a warning, not
     silently dropped — an eval script that quietly excludes files you meant
@@ -54,7 +58,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server
 
 
-LANG_PREFIX_RE = re.compile(r"^([a-z]{2})_")
+# Two-letter base code, optionally followed by a region suffix: es, es-la,
+# pt-br, zh-hk. The suffix is NOT optional sugar — _MIN_CONF_MAP,
+# _LOCAL_ENGINE_RECOMMENDATION and VISION_LANGS are all keyed on the raw
+# chapter language, so 'es-la' does not inherit 'es' anywhere in the
+# pipeline. A harness that could only spell 'es' could not test what an
+# es-la chapter actually does (it silently skipped those files instead).
+LANG_PREFIX_RE = re.compile(r"^([a-z]{2}(?:-[a-z]{2})?)_")
 
 
 def _infer_lang(filename: str):
