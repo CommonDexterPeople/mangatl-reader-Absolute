@@ -50,6 +50,7 @@ import * as ns_paint_brush from './paint-brush.js';
 import * as ns_erase_tool from './erase-tool.js';
 import * as ns_merge_tuner from './merge-tuner.js';
 import * as ns_trans_rail from './trans-rail.js';
+import * as ns_onboarding from './onboarding.js';
 
 import { refreshCacheUI } from './cache.js';
 import { _renderHistoryUI } from './history.js';
@@ -57,6 +58,7 @@ import { restoreMdAuthFromStorage } from './mangadex-auth.js';
 import { startPipeline } from './pipeline.js';
 import { setReadOrder } from './state-and-constants.js';
 import { getModelInfo, onModelChange, onTargetLangChange } from './translate-client.js';
+import { renderOnboarding } from './onboarding.js';
 import { toast } from './utils.js';
 
 // ── The global bridge ────────────────────────────────────────────────────────
@@ -111,6 +113,7 @@ Object.assign(
   ns_erase_tool,
   ns_merge_tuner,
   ns_trans_rail,
+  ns_onboarding,
 );
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
@@ -150,6 +153,13 @@ function boot() {
     document.getElementById('ai-model').value = savedModel;
   }
   onModelChange();  // restores per-provider key + syncs placeholder + hint + vision group visibility
+
+  // First-run guidance: the "what is this" card and the API-key
+  // walkthrough. Must come AFTER onModelChange() above, which is what
+  // loads any saved key into the field -- the key guide hides itself once
+  // a key is present, so running it first would flash the guide at a
+  // returning user who already has one.
+  renderOnboarding();
 
   // Restore the Vision-OCR-specific Gemini key (only relevant/visible when
   // DeepL is the active translator — see onModelChange()'s vision-ocr-key-wrap
