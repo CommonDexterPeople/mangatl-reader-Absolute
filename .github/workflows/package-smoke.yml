@@ -1,0 +1,75 @@
+name: Packaged build smoke test
+
+# Builds the Windows artifact and runs it.
+#
+# WHY THIS IS SEPARATE FROM ci.yml
+#   ci.yml validates the SOURCE tree, on Ubuntu, in seconds. It cannot catch
+#   anything about the packaged build, and two real defects proved that:
+#   the exe recommended an OCR engine it did not contain, and /ocr-crop
+#   returned 500 "No module named 'easyocr'" the first time a user corrected
+#   a bubble by hand. Both were invisible from a source install, where
+#   easyocr IS importable.
+#
+# WHY IT IS NOT ON EVERY PR
+#   It needs a Windows runner and a ~250MB PyInstaller build — minutes, not
+#   seconds, and most PRs cannot affect the artifact. So: on demand, and
+#   automatically on a release tag, which is the moment it actually matters.
+#   Run it manually before cutting a release, or after touching packaging/,
+#   server.py's engine resolution, or anything lazily imported.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  smoke:
+    name: Build the exe and exercise it
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the packaged build's dependencies
+        # Deliberately NOT easyocr/torch. Installing them here would let
+        # PyInstaller follow a transitive import back into torch and quietly
+        # undo the spec's excludes — the bundle would build, pass, and ship
+        # at 900MB. The smoke test asserts their absence, but not installing
+        # them in the first place is the stronger guarantee.
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet pyinstaller flask requests opencv-python-headless numpy pillow rapidocr onnxruntime
+
+      - name: Build the single-file source bundle
+        run: python build.py
+
+      - name: Build the Windows executable
+        run: pyinstaller packaging/MangaTL-Reader.spec --noconfirm --distpath packaging/out --workpath packaging/work
+
+      - name: Smoke-test the executable
+        # Starts the exe, does real OCR through it, and stops it. Exits
+        # non-zero on any failed check, which fails this job.
+        run: python packaging/smoke_test.py packaging/out/MangaTL-Reader/MangaTL-Reader.exe
+
+      - name: Report bundle size
+        # Not a gate — a number to eyeball. A sudden jump from ~250MB is the
+        # signature of an exclusion having stopped working.
+        run: |
+          $size = (Get-ChildItem -Recurse packaging/out/MangaTL-Reader | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Output ("bundle size: {0:N0} MB" -f $size)
+
+      - name: Upload the build
+        # Keeps the artifact that was actually tested, so a release can ship
+        # the exact bytes CI exercised rather than a local rebuild.
+        uses: actions/upload-artifact@v4
+        with:
+          name: MangaTL-Reader-windows
+          path: packaging/out/MangaTL-Reader
+          retention-days: 14
