@@ -69,9 +69,38 @@ The real fix is an Authenticode code-signing certificate (~$100–400/yr). Until
 then, expect some users to see a SmartScreen warning; reputation improves as
 more people install it.
 
+## The models must really be in the bundle
+
+`collect_data_files("rapidocr")` in the spec is load-bearing, and it fails
+quietly if it ever stops working. RapidOCR does **not** error when its ONNX
+models are missing — it silently falls back to downloading them from
+`modelscope.cn` at first use. Observed directly by removing them: `/ocr` then
+returns `OCR failed: Failed to download https://www.modelscope.cn/...`.
+
+That is the difference between this build working offline and not, which is
+the entire reason it ships RapidOCR rather than EasyOCR. And it is worse on a
+CI runner, where the download would probably *succeed* — so OCR would pass on
+a bundle that is broken for the offline user.
+
+`smoke_test.py` therefore asserts the `.onnx` files are physically present,
+rather than inferring it from OCR working.
+
 ## Verified
 
-The built exe was launched and exercised end to end: it serves the UI, the
-cross-origin guard is active, and a POST to `/ocr` returned
-`ocr_engine: rapidocr` with correctly merged bubble regions — two lines inside
-one bubble grouped together, a second bubble kept separate.
+Run [`smoke_test.py`](smoke_test.py) against the built exe:
+
+```
+python packaging/smoke_test.py packaging/out/MangaTL-Reader/MangaTL-Reader.exe
+```
+
+It starts the exe, checks the exclusions held and the models are bundled, does
+real OCR through it (asserting `ocr_engine: rapidocr` and that two separate
+bubbles come back as two regions), exercises `/ocr-crop`, confirms the
+cross-origin guard survived freezing, and stops the server. Exits non-zero on
+any failure. Nine checks.
+
+CI runs exactly this on demand and on release tags — see
+[`.github/workflows/package-smoke.yml`](../.github/workflows/package-smoke.yml).
+It is not on every PR because it needs a Windows runner and a multi-minute
+build; run it before cutting a release, or after touching this directory,
+`server.py`'s engine resolution, or anything lazily imported.
