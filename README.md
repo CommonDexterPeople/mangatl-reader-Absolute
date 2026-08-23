@@ -14,7 +14,9 @@ It also works completely offline against your own local folder or `.cbz`/`.zip` 
 - [Features](#features)
 - [Getting started](#getting-started)
 - [Requirements](#requirements)
-- [Project layout](#project-layout-for-contributors)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Project layout](#project-layout)
 - [Known limitations](#known-limitations)
 - [A note on scope](#a-note-on-scope)
 - [License](#license)
@@ -109,7 +111,7 @@ and it hands you back the same chapter, readable in your language, in your brows
 Grab the latest `MangaTL-Reader.py` from this repo's **Releases** page and double-click it (or run `python MangaTL-Reader.py`). It auto-installs its own dependencies on first run — this takes a few minutes since EasyOCR downloads a language model — and opens your browser automatically once it's ready.
 
 **Want to edit, extend, or contribute?**
-Clone the repo instead. The source is split into readable files, not one multi-thousand-line blob:
+Clone the repo and see **[CONTRIBUTING.md](CONTRIBUTING.md)**:
 
 ```bash
 git clone https://github.com/CommonDexterPeople/mangatl-reader-Absolute.git
@@ -117,7 +119,20 @@ cd mangatl-reader-Absolute
 python server.py
 ```
 
-Edit anything under `static/` and refresh your browser — no restart needed. Editing `server.py` does need one.
+**First run takes a few minutes.** It installs its own dependencies, and EasyOCR
+downloads a language model (~100–400 MB) the first time you OCR a page. That is
+a one-time cost — later runs start in seconds. The browser opens on its own when
+the server is ready.
+
+**Then you need an API key.** Translation is the one part that isn't local:
+
+- **Gemini** — free tier, no card: [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey). Also unlocks Vision OCR, which is what handles Japanese, Korean, Chinese, Thai, Cyrillic and Vietnamese well.
+- **DeepSeek** — roughly $0.02–0.05 per chapter: [platform.deepseek.com](https://platform.deepseek.com)
+- **DeepL** — translation only, no speech/thought/SFX typing
+
+Paste it into the key field on the main screen. It is stored in your browser's
+`localStorage` and sent to your own local server, never anywhere else — see
+[SECURITY.md](SECURITY.md).
 
 ---
 
@@ -132,106 +147,66 @@ Edit anything under `static/` and refresh your browser — no restart needed. Ed
 
 ---
 
-## Project layout (for contributors)
+## Configuration
 
-```
-.
-├── server.py           Flask backend — routes, OCR pipeline, translation providers
-├── mtl/                Modules split out of server.py
-│   ├── config.py          Constants shared by server.py and the modules below
-│   ├── security.py        SSRF allowlist, image-body loading, exposure guard
-│   ├── geometry.py        Panel borders, bubble components, fused-bubble waist veto
-│   ├── merge.py           Grouping OCR fragments into one region per bubble
-│   └── inpaint.py         Text erasure: LaMa, OpenCV inpainting, flat fill, smudge pass
-├── static/
-│   ├── index.html         Page markup only
-│   ├── style.css          All styling
-│   └── js/                ES modules, one per concern: chapter pipeline,
-│                           correction UI, export, MangaDex auth, etc.
-│                           main.js is the entry point; chapter-source.js
-│                           defines the Chapter shape every source produces.
-├── packaging/          PyInstaller spec + Inno Setup script for the Windows
-│                         build — see packaging/README.md for what it ships
-│                         and, more importantly, what it deliberately leaves out
-├── requirements.txt    Explicit dependency install, for a venv/container/CI.
-│                         Not needed for the normal path — server.py installs
-│                         what's missing on first run
-├── SECURITY.md         Threat model: what is defended, and what is not
-└── build.py            Reassembles everything into one distributable .py file
+Everything is optional; the defaults are what you want for reading on your own
+machine.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PORT` | `8080` | Port to serve on. The app tells you to set this if 8080 is taken. |
+| `MTL_SUWAYOMI_HOST` | `127.0.0.1:4567` | Where your Suwayomi-Server lives, if not the default port. |
+| `MTL_MODEL_DIR` | next to the app | Where downloaded model checkpoints are cached. Set it if the install directory isn't writable (a machine-wide install under Program Files, a read-only mount). |
+| `MTL_ALLOW_EXPOSED` | unset | Required to start on a non-localhost address. The server has no authentication, so exposing it has to be deliberate — read [SECURITY.md](SECURITY.md) first. |
+| `MTL_ALLOWED_HOSTS` | unset | Comma-separated hostnames to accept in the `Host` header. Needed only behind a reverse proxy, which forwards its own hostname. |
+
+```bash
+PORT=8081 python server.py                    # macOS/Linux
+$env:PORT=8081; python server.py              # Windows PowerShell
 ```
 
-`mtl/` exists because `server.py` had grown to ~6,100 lines with the first route
-around line 4,600. The modules there are ordinary imports, so the tests import and
-call the real functions rather than scraping source text. `build.py` **inlines**
-them into the single-file build rather than importing them — so a module in `mtl/`
-may import from an earlier one in `config → security → geometry → merge → inpaint`
-order, but never from `server.py` itself, and CI checks the built file has no `mtl`
-imports left.
+---
 
-`merge.py` is the one module worth reading before you touch it. It was a single
-739-line `_merge_bubble_regions()` whose margin math, union-find, vetoes, column
-detection and line clustering were all closures — testable only by running the
-whole pipeline and inferring from the region count which stage had broken. Each
-stage is now a module-level function taking explicit arguments; its module
-docstring lists them in the order they run. The algorithm did not change in the
-split (verified by running the old and new implementations against identical
-inputs, including real pages, and diffing the outputs).
+## Troubleshooting
 
-One consequence worth knowing: the structural vetoes are reached through a
-`VetoSet`, not called by name. Tests that need to disable exactly one veto — to
-prove the symptom it prevents still reproduces without it — pass an override
-instead of monkeypatching. Monkeypatching cannot work here, because `merge.py`
-binds those functions into its own namespace at import, and it would still
-*appear* to work in the single-file build, where `build.py` flattens every module
-into one shared namespace.
+**"Port 8080 is already in use."** Something else has it. Set `PORT` as above —
+no need to edit any file.
 
-`static/js/` is ES modules. Each file declares what it imports, so load order is
-no longer something you maintain by hand — `index.html` loads exactly one entry
-point (`main.js`) and a new module just needs importing wherever it's used.
+**Windows warns about an unknown publisher.** The packaged build isn't
+code-signed (a certificate is an annual cost this project doesn't carry), so
+SmartScreen and some antivirus flag it. "More info" → "Run anyway", or run from
+source instead if you'd rather not.
 
-`main.js` also holds the **global bridge**: `index.html` and a lot of
-JS-generated markup call functions straight from inline `onclick="…"`
-attributes, which resolve against the global scope at click time. Module scope
-isn't global, so `main.js` re-publishes every module's exports onto `window`.
-That is one `Object.assign` over all 26 module namespaces, so **all 443
-exports** end up global — of which about 103 are actually called from inline
-handlers. The gap between those two numbers is the shim, not the target state.
-To shrink it: convert inline handlers to `addEventListener` or event
-delegation, then drop modules from that `Object.assign` as nothing in the
-markup calls into them.
+**First run seems frozen.** It's downloading the EasyOCR model — a few hundred
+MB with no progress bar. Give it a few minutes. It only happens once.
 
-**Adding a chapter source** (a fourth alongside MangaDex, Suwayomi, and local
-folder/CBZ) means writing one loader in `chapter-source.js` that returns a
-`Chapter`, then registering it on each screen. It used to mean writing it twice —
-once for the reader and once, near-identically, for the Erase Tool. The `Chapter`
-shape is documented at the top of `chapter-source.js`; note `cacheable`, which is
-what encodes "local pages don't survive a reload" as data rather than prose.
+**Translation fails but OCR works.** Almost always the API key: wrong provider
+selected for the key you pasted, or a free-tier quota that has run out. The
+error toast names which provider rejected it.
 
-Three consequences worth knowing before editing `static/js/`:
+**Everything is slow, or OCR quality is poor.** Try the other local engine
+(EasyOCR vs RapidOCR) in the settings — they have genuinely different
+per-language strengths, and the app suggests one per chapter. With a Gemini key,
+Vision OCR handles the hard scripts far better than either.
 
-- **You can't assign to another module's binding.** Imports are read-only. Shared
-  mutable state goes through setters (`setCancelled()` in
-  `state-and-constants.js`), and behaviour is added to another module's function
-  by subscribing to a hook it exposes (`onAfterPageRender()` in `page-render.js`),
-  never by reassigning it.
-- **Prefer `export function` over `export const fn = …`.** Both work under ES
-  modules, but the single-file build flattens everything into one classic script,
-  where a top-level `const` is a lexical global (reachable from inline handlers,
-  but not a `window` property) while a function declaration is both. Declarations
-  keep `window.X` resolving identically in either build.
-- **Top-level names must stay unique across all of `static/js/`.** Modules
-  themselves don't require that, but `build.py` flattens them into one scope for
-  the single-file build, where a collision is a redeclaration. The build fails
-  loudly if two modules export the same name.
+**Bubbles are merged together or split apart.** Use **⚖ MERGE** on the page to
+tune the sensitivity live — it costs no API calls. **✏ Correct** fixes
+individual regions by hand.
 
-Run `python build.py` to produce `dist/MangaTL-Reader.py` — this is exactly what gets attached to a GitHub Release for the "just double-click it" crowd. Don't hand-edit the built file: fixes belong in `server.py`/`static/`, then re-run the build.
+---
+
+## Project layout
+
+Moved to **[CONTRIBUTING.md](CONTRIBUTING.md)** — the module map, why `mtl/`
+exists, how `build.py` flattens everything into the single-file build, and the
+three things about `static/js/` that will bite you before you notice them.
 
 ---
 
 ## Known limitations
 
 - Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
-- Seven test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, four bubble-segmentation cases, and the merge pipeline's individual stages; there's no broader suite beyond those yet. The four bubble-segmentation suites are synthetic geometry apart from two checks that run against a real page when `eval_samples/` is present, and the stage tests are synthetic by design — they pin each stage's contract, not the real-page tuning of the constants, which lives in `KNOWN_ISSUES_DRAFT.md`. Nothing covers the routes, the translation providers, or any of `static/js/`. All seven run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
+- Eight test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, four bubble-segmentation cases, the merge pipeline's individual stages, and the model registry's consistency across the picker, `MODEL_INFO` and `rates.json`; there's no broader suite beyond those yet. The four bubble-segmentation suites are synthetic geometry apart from two checks that run against a real page when `eval_samples/` is present, and the stage tests are synthetic by design — they pin each stage's contract, not the real-page tuning of the constants, which lives in `KNOWN_LIMITATION_DRAFT.md`. Nothing covers the routes, the translation providers, or any of `static/js/`. All eight run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
 
 ---
 

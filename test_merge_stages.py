@@ -22,7 +22,7 @@ WHY THIS FILE EXISTS
 WHAT IT DOES NOT DO
   These are synthetic inputs. They pin the CONTRACT of each stage (what it
   promises its caller), not the real-page tuning of the constants — that
-  evidence lives in KNOWN_ISSUES_DRAFT.md and is guarded by the end-to-end
+  evidence lives in KNOWN_LIMITATION_DRAFT.md and is guarded by the end-to-end
   tests above. A change that keeps every contract here and still breaks a
   real page is exactly what those tests are for; the two layers are
   complementary, not redundant.

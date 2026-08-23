@@ -14,7 +14,7 @@ without this.
 > anything in it. Both blockers are gone: the frontend engine selector is
 > live (`#local-ocr-engine` in `index.html`, `local_engine` sent on every
 > `/ocr` call), and the over-merge bug that gated it was subsequently
-> *fixed* rather than merely accepted — see KNOWN_ISSUES_DRAFT.md,
+> *fixed* rather than merely accepted — see KNOWN_LIMITATION_DRAFT.md,
 > "RESOLVED (measured on 15 real pages, both engines): adjacent text
 > containers merged across a clean gutter", with `test_adjacent_container_gap.py`
 > as the regression guard. The "do not wire the toggle live" instruction
@@ -44,7 +44,7 @@ through `/ocr`, `rapidocr` added to the bootstrap installer. Verified
 against real pages during this session.
 
 **Blocked on:** a real bug found during that verification, not a
-hypothetical — see KNOWN_ISSUES_DRAFT.md, "Confirmed, blocking:
+hypothetical — see KNOWN_LIMITATION_DRAFT.md, "Confirmed, blocking:
 `_merge_bubble_regions` over-merges adjacent bubbles on RapidOCR's
 fragment output." RapidOCR's finer per-line fragmentation exposes an
 adaptive-margin merge behavior that EasyOCR's coarser fragmentation
@@ -67,7 +67,7 @@ the 5px legitimate gap the fix is supposed to preserve merging for,
 which means no single geometric threshold can separate the two cases
 correctly here — not a tuning problem, a structural one. Full mechanism
 and the reasoning for why this rules out further threshold-tuning is in
-KNOWN_ISSUES_DRAFT.md. **Still blocked, and the fix approach itself needs
+KNOWN_LIMITATION_DRAFT.md. **Still blocked, and the fix approach itself needs
 to change** — see that entry for why the real fix likely has to go back
 to `_crosses_bubble_boundary`'s actual bubble-outline detection rather
 than any further margin/gap-size tuning.
@@ -76,7 +76,7 @@ than any further margin/gap-size tuning.
 gating on a full fix — it's the same pre-existing, already-documented
 `_crosses_bubble_boundary` blind spot EasyOCR already has (RapidOCR just
 hits it more often), and the Correction UI is already the accepted
-fallback for that class of miss for EasyOCR. See KNOWN_ISSUES_DRAFT.md
+fallback for that class of miss for EasyOCR. See KNOWN_LIMITATION_DRAFT.md
 for the full reasoning.
 
 **Status: frontend now wired.** `#local-ocr-engine-group` in `index.html`
@@ -97,7 +97,7 @@ chapter rather than once per page.
    recommendations reaching real users, not just an internal caveat.
 2. If real usage shows the bubble-merge limitation surfacing often enough
    that the Correction UI fallback doesn't feel sufficient, revisit actual
-   bubble-outline tracing (see KNOWN_ISSUES_DRAFT.md) — deliberately not
+   bubble-outline tracing (see KNOWN_LIMITATION_DRAFT.md) — deliberately not
    attempted yet, on purpose, pending real signal rather than guessing at
    how often this actually bites.
 

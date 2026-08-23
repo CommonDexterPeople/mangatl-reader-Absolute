@@ -25,7 +25,7 @@ WHY THE OTHER VETOES CANNOT COVER THIS
 HOW TO RUN
   python test_adjacent_container_gap.py
   Synthetic geometry only — no page images needed, runs in under a second.
-  The real-page evidence lives in KNOWN_ISSUES_DRAFT.md; this test pins the
+  The real-page evidence lives in KNOWN_LIMITATION_DRAFT.md; this test pins the
   mechanism so the constant cannot drift back up unnoticed.
 """
 import importlib.util

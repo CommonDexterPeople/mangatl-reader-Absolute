@@ -5,7 +5,7 @@ JSON rescue logic in _translate_deepseek() (Strategy A: find the JSON
 object enclosing the "translations" key inside reasoning_content).
 
 BACKGROUND
-  See KNOWN_ISSUES_DRAFT.md, "DeepSeek rescue Strategy A: doesn't handle a
+  See KNOWN_LIMITATION_DRAFT.md, "DeepSeek rescue Strategy A: doesn't handle a
   nested object before the key". The original implementation used
   rc.rfind('{', 0, idx) to find the opening brace of the enclosing JSON
   object — which finds the NEAREST '{' before the key, not the one that

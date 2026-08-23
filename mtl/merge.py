@@ -45,7 +45,7 @@ from mtl.geometry import (
 LINE_GAP_FACTOR = 1.6
 
 # NEW — separate, tighter calibration for HORIZONTAL reach. See
-# KNOWN_ISSUES_DRAFT.md, "Confirmed, blocking: _merge_bubble_regions
+# KNOWN_LIMITATION_DRAFT.md, "Confirmed, blocking: _merge_bubble_regions
 # over-merges adjacent bubbles on RapidOCR's fragment output" for the
 # real-page bug this addresses.
 #

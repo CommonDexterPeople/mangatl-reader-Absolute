@@ -411,7 +411,7 @@ unified multi-language set (es/pt/vi/tr/id/ja among others — see below for
 which languages that set does *not* include).
 
 **Found a real bug during first verification, not while writing the code**
-— see KNOWN_ISSUES_DRAFT.md's "Confirmed, blocking" entry.
+— see KNOWN_LIMITATION_DRAFT.md's "Confirmed, blocking" entry.
 `_merge_bubble_regions`'s adaptive merge margin, tuned against EasyOCR's
 coarser fragmentation, over-merges adjacent bubbles when fed RapidOCR's
 finer per-line fragments. Reproduced directly (two bubbles' dialogue
@@ -423,7 +423,7 @@ that can silently produce garbled dialogue.
 
 > **Update (2026-08-23) — both halves of the paragraph above are now out of
 > date.** The bug was fixed, not just worked around: see
-> KNOWN_ISSUES_DRAFT.md, "RESOLVED (measured on 15 real pages, both
+> KNOWN_LIMITATION_DRAFT.md, "RESOLVED (measured on 15 real pages, both
 > engines): adjacent text containers merged across a clean gutter", guarded
 > by `test_adjacent_container_gap.py`. The toggle is live —
 > `#local-ocr-engine` in `index.html`, `local_engine` sent on every `/ocr`
