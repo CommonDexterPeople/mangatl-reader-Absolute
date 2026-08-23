@@ -575,15 +575,57 @@ def _crosses_bubble_boundary(
 
 # Ratio of (narrowest extent between the two fragments) to (the narrower
 # of the two fragments' own local extents) below which the shape is
-# treated as genuinely pinched. Measured separation on real pages:
-# 0.74 for the confirmed fused double-bubble vs 1.00-1.05 for confirmed
-# single bubbles, so this sits well clear of both. UNVALIDATED beyond the
-# pages in eval_samples/ — same caveat as every other constant here.
-_WAIST_RATIO_THRESHOLD = 0.85
+# treated as genuinely pinched.
+#
+# Measured on real pages:
+#   0.68  synthetic fused figure-8 (test_fused_bubble_waist.py)
+#   0.74  Brazil_raw.jpg fused double-bubble
+#   0.89  Shinobigoto ch65 p05 fused double-bubble  <-- shallowest real case
+#   1.00  every horizontal pair on caption_welds_to_bubble.jpg (measured:
+#         25 fragments, every same-component horizontal pair is exactly
+#         1.000, none with an interior minimum)
+#   1.00  synthetic single ellipse (test_fused_bubble_waist.py)
+#
+# This was 0.85, which sat below the shallowest real fused case (0.89) and
+# so missed it — see ES_LA_OCR_EVAL.md section F. Raised to 0.92, which is
+# above 0.89 and below the 1.00 floor of every confirmed single container.
+#
+# Why 1.00 is a FLOOR for single containers and not just an observation: a
+# single unpinched container's extent profile is unimodal, and the minimum
+# of a unimodal sequence over an interval is always attained at one of the
+# interval's endpoints. When the minimum IS an endpoint, `waist` and `ends`
+# below are the same number, so the ratio is exactly 1.0 — by construction,
+# not by luck. That is why both real single-container pages measure exactly
+# 1.000, and it is what gives this constant 0.08 of headroom rather than a
+# tuned margin. Anything scoring below 1.0 is genuinely two-lobed.
+#
+# Sweep evidence (0.85 -> 0.95, merge re-run over cached OCR fragments so
+# only this constant varied, 59 real es-la pages x both engines): 10 pages
+# per engine change at 0.92. Every change inspected — all break up a
+# confirmed cross-bubble interleave, none breaks a correct region in half.
+# Two pages (easyocr ch64 p02, rapidocr ch66 p05) still show a fragmented
+# NEIGHBOUR after the split, but the fragmentation is pre-existing and was
+# merely masked by the over-merge: those fragments are separate regions at
+# 0.85 too. 0.95 was rejected as needlessly close to the 1.00 floor.
+_WAIST_RATIO_THRESHOLD = 0.92
 
 # Below this many pixels between the two x-centers there aren't enough
 # columns to read a profile from, and any "minimum" is noise.
 _WAIST_MIN_SPAN_PX = 12
+
+# How many columns clear of BOTH ends the narrowest column must sit for the
+# dip to count as a real constriction rather than an edge nick.
+#
+# This does NOT do the work of separating one-lobe from two-lobe shapes —
+# the ratio above already does that, since an endpoint minimum scores
+# exactly 1.0 (see its comment). What this catches is the narrower case of
+# a defect in the outline sitting a few columns from one fragment's own
+# center: a nick, a bubble tail, a gap where the letterer's line broke. That
+# scores a genuinely low ratio while saying nothing about whether the two
+# fragments are in different lobes, and without this guard it would split a
+# single bubble in half. test_fused_bubble_waist.py's edge-notch case
+# measures 0.525 — comfortably "pinched" by ratio alone, at column 2 of 270.
+_WAIST_MIN_INTERIOR_PX = 4
 
 
 def _component_column_extents(label_map, comp_label: int, cache: dict):
@@ -827,7 +869,16 @@ def _waist_separates_boxes(box_a: tuple, box_b: tuple, label_map, cache: dict) -
         return False
 
     span = ext[i_a:i_b + 1]
-    waist = float(span.min())
+    k = int(span.argmin())
+    waist = float(span[k])
+
+    # The narrowest column must sit clear of BOTH ends — an outline nick
+    # beside one of the fragments is not a waist between two lobes. See
+    # _WAIST_MIN_INTERIOR_PX; this is a guard against a specific defect,
+    # not the one-lobe/two-lobe test (the ratio below is that).
+    if not (_WAIST_MIN_INTERIOR_PX <= k <= len(span) - 1 - _WAIST_MIN_INTERIOR_PX):
+        return False
+
     # Compare against the narrower of the two fragments' OWN local extents,
     # not the component's global maximum: a lobe that is legitimately
     # smaller than its neighbour shouldn't read as "pinched" just for being

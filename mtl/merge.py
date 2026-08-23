@@ -101,11 +101,16 @@ LINE_GAP_FACTOR = 1.6
 # flat-light component (the gutter is pure 255 white — measured — so
 # there is no ink for _crosses_bubble_boundary or the outline carving to
 # find), and they are RECTANGLES, so the silhouette has no constriction
-# for _waist_separates_boxes to measure (extent across the gutter runs
-# 348→355→363→372→379px — monotonic, waist ratio 0.948 vs the 0.85
-# threshold). Shape and ink signals are both structurally absent here;
-# gap SIZE is the only thing left, which is precisely what this constant
-# controls.
+# for _waist_separates_boxes to measure — extent across the gutter is
+# monotonic, so the profile minimum lands on an endpoint and the waist
+# ratio is exactly 1.000. (Re-measured on the real page: all 25 fragments,
+# every same-component horizontal pair, 1.000 with a non-interior minimum.
+# An earlier version of this comment cited 0.948, which does not match the
+# current "narrower of the two ends" ratio formula — see
+# _WAIST_RATIO_THRESHOLD. The distinction matters: 1.000 means this page
+# has the full width of the threshold as headroom, not 0.05 of it.)
+# Shape and ink signals are both structurally absent here; gap SIZE is the
+# only thing left, which is precisely what this constant controls.
 #
 # Sweep evidence (0.5 → 0.05, merge re-run over cached OCR fragments so
 # only this constant varied): every single change at every value was a
