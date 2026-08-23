@@ -1837,7 +1837,7 @@ def _ocr_gemini_vision(image_bytes: bytes, lang: str, key: str, model: str) -> t
 # `from server import _merge_bubble_regions` and friends keep resolving.
 #
 # Nothing about the algorithm changed in the move — see mtl/merge.py's module
-# docstring for the stage-by-stage map, and KNOWN_ISSUES_DRAFT.md for the
+# docstring for the stage-by-stage map, and KNOWN_LIMITATION_DRAFT.md for the
 # measurements behind its constants.
 
 
@@ -2155,7 +2155,7 @@ def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
 
     KNOWN WEAKNESS: RapidOCR drops most Vietnamese tone marks — measured at
     8.0% marked characters against a hand-read 23.2% on a real page. See
-    KNOWN_ISSUES_DRAFT.md's hybrid-detection entry for the full numbers and
+    KNOWN_LIMITATION_DRAFT.md's hybrid-detection entry for the full numbers and
     for why the two-engine fix built against them was not kept.
     """
     arr_pre, arr_raw, w, h, gray_orig, h_borders, v_borders, bubble_label_map = \
@@ -2684,7 +2684,7 @@ def _rescue_json_from_reasoning(rc: str, rescue_key: str = "translations") -> st
     # Strategy A (primary): find the JSON object that actually
     # ENCLOSES the "translations" key, then parse it with json.loads.
     #
-    # FIX (was: KNOWN_ISSUES_DRAFT.md "DeepSeek rescue Strategy A:
+    # FIX (was: KNOWN_LIMITATION_DRAFT.md "DeepSeek rescue Strategy A:
     # doesn't handle a nested object before the key") — a single
     # rc.rfind('{', 0, idx) finds the NEAREST '{' before the key,
     # which is wrong whenever a nested object sits between the true
@@ -2693,7 +2693,7 @@ def _rescue_json_from_reasoning(rc: str, rescue_key: str = "translations") -> st
     # rfind grabs {"name":"x"}'s brace, not the outer one, and
     # json.loads then chokes on the dangling trailing content).
     # Reproduced directly against this exact shape before this fix
-    # landed; see KNOWN_ISSUES_DRAFT.md for the full trace.
+    # landed; see KNOWN_LIMITATION_DRAFT.md for the full trace.
     #
     # Correct approach: walk backward from the key counting brace
     # depth (each '}' seen while scanning right-to-left means we've

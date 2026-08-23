@@ -13,7 +13,7 @@ replaced with a real sample — run it, read the report, update the dict.
 WHY FRAGMENT-LEVEL, NOT REGION-LEVEL:
 This reports on raw_boxes_out (individual OCR fragments, pre-merge), not
 on the final merged `regions` a page would actually render with. That's
-deliberate: KNOWN_ISSUES_DRAFT.md documents a confirmed bug where
+deliberate: KNOWN_LIMITATION_DRAFT.md documents a confirmed bug where
 _merge_bubble_regions over-merges adjacent bubbles specifically on
 RapidOCR's fragment output. Scoring at the region level right now would
 conflate "did the engine read the text correctly" with "did an already-

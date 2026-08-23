@@ -4,7 +4,7 @@ test_bubble_outline_tracing.py — regression test for the outline-carving fix
 in _find_bubble_components() / _bubble_outline_mask() (server.py).
 
 BACKGROUND
-  See KNOWN_ISSUES_DRAFT.md, "Confirmed, blocking: _merge_bubble_regions
+  See KNOWN_LIMITATION_DRAFT.md, "Confirmed, blocking: _merge_bubble_regions
   over-merges adjacent bubbles on RapidOCR's fragment output", and the
   "OUTLINE-TRACING FIX ATTEMPT" note in the "Bubble contour detection"
   comment block above _find_bubble_components in server.py.
@@ -19,7 +19,7 @@ BACKGROUND
   mostly sees flat fill on both sides of the line, so the averaged variance
   can land under the flatness threshold even directly on top of the line —
   silently bridging what should be two separate components into one.
-  Confirmed on a real page (Brazil_raw.jpg, see KNOWN_ISSUES_DRAFT.md):
+  Confirmed on a real page (Brazil_raw.jpg, see KNOWN_LIMITATION_DRAFT.md):
   two bubbles fused into a single connected component, and their text was
   interleaved fragment-by-fragment into one garbled region.
 
@@ -61,7 +61,7 @@ WHAT THIS TESTS
     4. End-to-end _merge_bubble_regions: with the NEW label map, the two
        fragments stay as 2 separate regions; with the OLD one, they merge
        into 1 region with concatenated (garbled, cross-bubble) text —
-       reproducing the exact real-world symptom from KNOWN_ISSUES_DRAFT.md,
+       reproducing the exact real-world symptom from KNOWN_LIMITATION_DRAFT.md,
        not just a label-map difference.
     5. Regression: two fragments inside the SAME single bubble, far apart
        (top vs bottom), still resolve to one component / one merged region
@@ -74,7 +74,7 @@ WHAT THIS TESTS
        the page) keeps its entire interior as one component; several
        widely-spaced interior points all resolve to the same label.
 
-  HONESTY NOTE, per this project's own standard (see KNOWN_ISSUES_DRAFT.md
+  HONESTY NOTE, per this project's own standard (see KNOWN_LIMITATION_DRAFT.md
   and the "OUTLINE-TRACING FIX ATTEMPT" comment in server.py): this
   validates the mechanism against SYNTHETIC image data constructed to
   reproduce the reported failure's characteristics (a thin/low-contrast/
@@ -287,7 +287,7 @@ def main():
         print("same-bubble merges (far-apart, tight-staggered, or a bubble with no neighbour")
         print("at all).")
         print()
-        print("REMAINING STEP (not covered by this script, per KNOWN_ISSUES_DRAFT.md's own")
+        print("REMAINING STEP (not covered by this script, per KNOWN_LIMITATION_DRAFT.md's own")
         print("verification bar): re-run the real Brazil_raw.jpg page (and a handful of")
         print("others with tightly-packed panels) through _run_rapidocr_detection with this")
         print("change applied, and confirm EasyOCR's existing behaviour on the same pages")

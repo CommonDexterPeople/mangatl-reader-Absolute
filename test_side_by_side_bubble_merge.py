@@ -4,7 +4,7 @@ test_side_by_side_bubble_merge.py — regression test for the horizontal /
 vertical merge-margin split in _merge_bubble_regions().
 
 BACKGROUND
-  See KNOWN_ISSUES_DRAFT.md, "Confirmed, blocking: _merge_bubble_regions
+  See KNOWN_LIMITATION_DRAFT.md, "Confirmed, blocking: _merge_bubble_regions
   over-merges adjacent bubbles on RapidOCR's fragment output" and the
   HORIZONTAL_GAP_FACTOR comment block in server.py.
 
@@ -57,7 +57,7 @@ WHAT THIS TESTS
   This validates the LOGIC against constructed layouts, not real manga
   pages — it cannot confirm the actual Brazil_raw.jpg case is fixed, or
   that a real staggered-lettering page still merges, since those need
-  real pixels and real OCR output. See KNOWN_ISSUES_DRAFT.md's own
+  real pixels and real OCR output. See KNOWN_LIMITATION_DRAFT.md's own
   fix-verification bar: re-run this exact page (and a handful of others
   with tightly-packed panels) through both engines and confirm (a)
   RapidOCR no longer merges the two bubbles and (b) EasyOCR's existing
@@ -98,7 +98,7 @@ def main():
     # ── 1. Side-by-side DIFFERENT bubbles, moderate real gap ──────────────
     # "SABE O" (bubble 1, line 2) / "EU OUVI" (bubble 2, line 1) — modeled
     # on the y-ranges from the confirmed Brazil_raw.jpg bug in
-    # KNOWN_ISSUES_DRAFT.md. Real gap = 20px.
+    # KNOWN_LIMITATION_DRAFT.md. Real gap = 20px.
     box_a = (60, 109, 150, 127, "SABE O")     # height 18
     box_b = (170, 114, 260, 131, "EU OUVI")   # height 17, gap = 170-150 = 20
 
@@ -159,7 +159,7 @@ def main():
         print()
         print("REMAINING STEP (not covered by this script): re-run the real")
         print("Brazil_raw.jpg page and a real staggered-lettering page through both")
-        print("engines, per KNOWN_ISSUES_DRAFT.md's fix-verification bar.")
+        print("engines, per KNOWN_LIMITATION_DRAFT.md's fix-verification bar.")
     else:
         print("SOME FAILED — see FAIL rows above.")
         sys.exit(1)

@@ -5,7 +5,7 @@ test_fused_bubble_waist.py — regression test for the fused double-bubble
 _dominant_component_for_box in server.py.
 
 BACKGROUND
-  See KNOWN_ISSUES_DRAFT.md ("Confirmed, blocking: _merge_bubble_regions
+  See KNOWN_LIMITATION_DRAFT.md ("Confirmed, blocking: _merge_bubble_regions
   over-merges adjacent bubbles on RapidOCR's fragment output", and the
   fix-attempt entries under it) and the "Fused double-bubble (waist)
   detection" section comment in server.py.
@@ -65,7 +65,7 @@ WHAT THIS TESTS
   and any page not in the small set this was checked against. The
   full-pipeline regression runs behind this fix (RapidOCR and EasyOCR,
   4 pages each, output identical except the intended Brazil_raw.jpg split)
-  are recorded in KNOWN_ISSUES_DRAFT.md, not re-run here — they need the
+  are recorded in KNOWN_LIMITATION_DRAFT.md, not re-run here — they need the
   OCR engines and real page images.
 
 HOW TO RUN

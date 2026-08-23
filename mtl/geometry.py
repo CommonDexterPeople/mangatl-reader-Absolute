@@ -124,7 +124,7 @@ def _crosses_border(
 # width text columns side by side, a common two-characters-talking layout)
 # — confirmed by eye against the source art to be genuinely two different
 # bubbles, but the merge still fused them; the veto never fired. This is the
-# same underlying gap as KNOWN_ISSUES_DRAFT.md's "Confirmed, blocking:
+# same underlying gap as KNOWN_LIMITATION_DRAFT.md's "Confirmed, blocking:
 # _merge_bubble_regions over-merges adjacent bubbles on RapidOCR's fragment
 # output" entry (Brazil_raw.jpg) — RapidOCR's denser fragmentation just made
 # it easier to reach in practice; the gap itself predates RapidOCR and isn't
@@ -180,7 +180,7 @@ def _crosses_border(
 # all adaptive thresholding (or any per-pixel ink signal) can ever help
 # with. Full writeup, including a follow-up shape-based (distance-
 # transform/watershed) attempt that ALSO didn't naively work and why, is
-# in KNOWN_ISSUES_DRAFT.md under "Fix attempt #3 verification result."
+# in KNOWN_LIMITATION_DRAFT.md under "Fix attempt #3 verification result."
 # Left in place because it's confirmed harmless and may still help a page
 # where the boundary is genuinely faint rather than absent — that case
 # hasn't actually been confirmed on a real page yet, only synthesized.
@@ -189,7 +189,7 @@ def _crosses_border(
 #
 # WHAT ACTUALLY RESOLVED THAT BUG: the fused double-bubble "waist" veto —
 # see the "Fused double-bubble (waist) detection" section further down
-# this file, and KNOWN_ISSUES_DRAFT.md's "RESOLVED (verified on the real
+# this file, and KNOWN_LIMITATION_DRAFT.md's "RESOLVED (verified on the real
 # page)" entry. Short version: on that page the two bubbles are one fused
 # silhouette with no separator of any kind between them, so both the
 # distance-based and the ink-based approaches were looking for something
@@ -253,7 +253,7 @@ def _bubble_outline_mask(gray: np.ndarray) -> np.ndarray:
     bubbles — using LOCAL adaptive thresholding rather than the page-wide
     flatness filter _find_bubble_components otherwise relies on.
 
-    WHY THIS EXISTS (see KNOWN_ISSUES_DRAFT.md, "Confirmed, blocking:
+    WHY THIS EXISTS (see KNOWN_LIMITATION_DRAFT.md, "Confirmed, blocking:
     _merge_bubble_regions over-merges adjacent bubbles on RapidOCR's
     fragment output" for the full real-page writeup this fixes):
     _find_bubble_components' flatness test box-filters squared Laplacian
@@ -375,7 +375,7 @@ def _find_bubble_components(gray: np.ndarray, img_w: int, img_h: int):
 
     # NEW — carve out thin/faint ink-outline barriers the coarse flatness
     # filter smooths over. See _bubble_outline_mask docstring and
-    # KNOWN_ISSUES_DRAFT.md's "Confirmed, blocking" entry for the real
+    # KNOWN_LIMITATION_DRAFT.md's "Confirmed, blocking" entry for the real
     # page this targets. Applied unconditionally (not opt-in) since this
     # can only ever REMOVE candidate pixels — it narrows components, it
     # can never merge two that the flatness test alone would have kept
