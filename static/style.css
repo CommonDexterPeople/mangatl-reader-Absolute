@@ -2318,3 +2318,125 @@ body {
   letter-spacing: 0.08em;
   color: var(--mid);
 }
+
+/* ── First-run onboarding (onboarding.js) ─────────────────────────────────────
+   The intro card and the API-key walkthrough. Both are transient by design —
+   they remove themselves once the user has history / has saved a key — so they
+   deliberately sit lighter than the .home-section blocks around them rather
+   than competing with the actual controls. */
+
+.intro-card {
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-left: 2px solid var(--ui);
+  border-radius: 4px;
+  margin-bottom: 1.4rem;
+  overflow: hidden;
+}
+.intro-card-hdr {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.7rem 0.85rem 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ui);
+  line-height: 1.35;
+}
+.intro-card-x {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  /* The glyph is ~15x18px, which is an unhittable target on a phone. Pad the
+     button out to a real touch target and pull the extra back with a negative
+     margin, so the close glyph still sits flush with the header text. */
+  padding: 0.55rem 0.7rem;
+  margin: -0.55rem -0.55rem -0.55rem 0;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+.intro-card-x:hover { color: var(--text); }
+.intro-card-body {
+  padding: 0 0.85rem 0.8rem;
+  font-size: 0.74rem;
+  line-height: 1.55;
+  color: var(--mid);
+}
+.intro-card-body p { margin: 0 0 0.55rem; }
+.intro-card-body p:last-child { margin-bottom: 0; }
+.intro-card-body b { color: var(--text); font-weight: 600; }
+.intro-card-body a { color: var(--ui); text-decoration: none; }
+.intro-card-body a:hover { text-decoration: underline; }
+.intro-card-tip {
+  border-top: 1px solid var(--border);
+  padding-top: 0.55rem;
+  color: var(--mid);
+}
+
+.key-guide { margin-top: 0.5rem; }
+.key-guide-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0.15rem 0;
+  color: var(--mid);
+  font-size: 0.72rem;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.key-guide-toggle:hover { color: var(--ui); }
+.key-guide-chevron { color: var(--ui); font-size: 0.65rem; }
+.key-guide-body {
+  margin-top: 0.5rem;
+  padding: 0.65rem 0.8rem;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.key-guide-steps {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  color: var(--mid);
+}
+.key-guide-steps li { margin-bottom: 0.22rem; }
+.key-guide-steps b { color: var(--text); font-weight: 600; }
+.key-guide-steps code {
+  background: var(--bg);
+  border: 1px solid var(--border2);
+  border-radius: 3px;
+  padding: 0 0.25rem;
+  font-size: 0.9em;
+  color: var(--ui);
+}
+.key-guide-link {
+  display: inline-block;
+  margin-top: 0.55rem;
+  color: var(--ui);
+  font-size: 0.73rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+.key-guide-link:hover { text-decoration: underline; }
+.key-guide-note {
+  margin-top: 0.55rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--dim);
+}
