@@ -2326,9 +2326,41 @@ _LOCAL_ENGINE_RECOMMENDATION = {
     # lang: (recommended_engine, one-line reason shown in the UI banner)
     'vi': ('easyocr',  "RapidOCR tends to drop or swap Vietnamese tone marks "
                         "on stacked diacritics; EasyOCR is more reliable here."),
-    'pt': ('rapidocr', "RapidOCR was more accurate and complete on Portuguese "
-                        "in our testing; EasyOCR's own confidence filter "
-                        "dropped some correctly-read lines."),
+    # pt / pt-br: upgraded from one page to two real series — 98 pages
+    # across five chapters of two different titles, scored against 7
+    # hand-read pages. See PT_BR_OCR_EVAL.md.
+    #
+    #                        series 1        series 2
+    #   exact word recall    73.9 / 55.0     57.3 / 28.2   (rapid / easy)
+    #   char accuracy        86.1 / 80.4     61.9 / 49.1
+    #
+    # RapidOCR wins both metrics in both series, so the call depends neither
+    # on which metric you prefer nor on which title you sample. It is also
+    # the more ROBUST engine: on the lower-resolution second series EasyOCR
+    # fell 26.8 points against RapidOCR's 16.6, and discarded 20.2% of its
+    # own fragments as unusable against RapidOCR's 0.0%. For a tool pointed
+    # at arbitrary scanlations, that robustness matters more than the gap on
+    # any one title.
+    #
+    # NOTE: the reason this entry USED to give — "EasyOCR's own confidence
+    # filter dropped some correctly-read lines" — did NOT reproduce. EasyOCR
+    # does drop far more of its own output (139 of 1201 fragments, 11.6%,
+    # against RapidOCR's 0 of 1087), but inspection says those droppings are
+    # garbled reads ('TnaBlya', 'COMeahL', 'HARU-SEPAD'), not correct lines.
+    # The filter is working; EasyOCR simply produces that much more noise for
+    # it to catch. Corrected here rather than carried forward.
+    #
+    # Unlike Spanish, accents are NOT the differentiator: the accent penalty
+    # is ~1pt for both engines, and NEITHER engine got a single accent WRONG
+    # (0 wrong marks each, 2 dropped each) — including the é/ê and á/â/ã
+    # distinctions that Portuguese has and Spanish doesn't. EasyOCR loses on
+    # plain character recognition and case stability instead.
+    'pt': ('rapidocr', "RapidOCR read Portuguese more accurately across a "
+                        "three-chapter sample — 73.9% vs 55.0% exact word "
+                        "recall, and fewer garbled reads."),
+    'pt-br': ('rapidocr', "RapidOCR read Portuguese more accurately across a "
+                        "three-chapter sample — 73.9% vs 55.0% exact word "
+                        "recall, and fewer garbled reads."),
     'ko': ('easyocr',  "RapidOCR's bundled model doesn't cover Korean at all "
                         "(unlike Vietnamese, this isn't an accuracy gap — it's "
                         "no coverage) and returns unusable output. This is a "
