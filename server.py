@@ -222,7 +222,11 @@ from mtl.geometry import (
     _dominant_component_for_box,
     _find_bubble_components,
     _find_panel_borders,
+    _SPLIT_MAX_STRADDLERS,
+    _SPLIT_STRADDLE_MARGIN_FACTOR,
+    _column_respected_by_layout,
     _waist_separates_boxes,
+    _waist_split_column,
 )
 from mtl.merge import (
     DEFAULT_VETOES,
@@ -1925,11 +1929,12 @@ def _rapidocr_readtext_primary(engine, arr, lang: str):
         math (_run_easyocr_detection's box-building step) works unchanged
         for either engine.
     """
-    result = engine(arr)
-    fragments, confidences = [], []
+    result = engine(arr, return_word_box=True)
+    fragments, confidences, word_groups = [], [], []
     if result.boxes is None:
-        return fragments, confidences
-    for box, text, conf in zip(result.boxes, result.txts, result.scores):
+        return fragments, confidences, word_groups
+    raw_words = getattr(result, "word_results", None)
+    for idx, (box, text, conf) in enumerate(zip(result.boxes, result.txts, result.scores)):
         text = (text or "").strip()
         if not text:
             continue
@@ -1941,7 +1946,34 @@ def _rapidocr_readtext_primary(engine, arr, lang: str):
         bbox = [[float(x), float(y)] for x, y in box]
         fragments.append((bbox, text))
         confidences.append(float(conf))
-    return fragments, confidences
+        # Kept fragments only, so word_groups stays aligned with fragments
+        # rather than with RapidOCR's own unfiltered indices.
+        word_groups.append(_normalise_word_group(raw_words, idx))
+    return fragments, confidences, word_groups
+
+
+def _normalise_word_group(raw_words, idx):
+    """One fragment's word boxes as [(text, conf, (x1,y1,x2,y2)), …], or None.
+
+    RapidOCR's word_results is a tuple-of-tuples whose element shape is not
+    part of any documented contract, so anything unexpected degrades to None
+    ("don't try to split this one") rather than raising. Losing a split is a
+    missed repair; raising here would fail the whole page's OCR.
+    """
+    if not raw_words or idx >= len(raw_words):
+        return None
+    try:
+        out = []
+        for word, conf, wbox in raw_words[idx]:
+            word = (word or "").strip()
+            if not word:
+                continue
+            xs = [float(p[0]) for p in wbox]
+            ys = [float(p[1]) for p in wbox]
+            out.append((word, float(conf), (min(xs), min(ys), max(xs), max(ys))))
+        return out or None
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 def _prepare_page_for_detection(image_bytes: bytes):
@@ -2039,7 +2071,105 @@ def _easyocr_fragment_boxes(arr_pre, arr_raw, lang: str):
     return boxes, confidences
 
 
-def _rapidocr_fragment_boxes(arr_pre, arr_raw, lang: str):
+def _split_fragment_at_waist(box, conf, words, label_map, all_boxes, cache):
+    """
+    Divide ONE OCR fragment that was read straight across two fused bubbles
+    into one fragment per bubble. Returns [(box, conf), …] — a single-entry
+    list (the input, unchanged) when there is nothing to split.
+
+    THE PROBLEM. RapidOCR's detector can draw one box across two adjacent
+    balloons and read both their lines as a single string. Measured on
+    Shinobigoto ch65 p05: one box, x1461-1976, 515px wide, reading
+    "...SERÁS LA CONTRA MÍ EN" — the left balloon's line and the right
+    balloon's line concatenated. That text goes to the translator as one
+    unit and comes back as nonsense.
+
+    WHY NOT IN _merge_bubble_regions. Merging groups whole fragments and
+    never divides one, so by then it is too late — all any veto there can do
+    is decline to join this to something ELSE. The repair has to happen here,
+    before fragments become merge input.
+
+    WHY NO RE-OCR. Recognition was not wrong: all five words above were read
+    correctly. Only the grouping was. RapidOCR reports a box per word (see
+    _rapidocr_readtext_primary), so the words are dealt to the correct side
+    by their own x positions, at no extra inference cost.
+
+    WHY A WAIST AND NOT A GAP. The gap between the two balloons' words here
+    is 18px — the same as the gap between two words INSIDE the right balloon
+    ("CONTRA"/"MÍ"). No distance threshold separates 18 from 18. That is the
+    same impossibility already recorded for HORIZONTAL_GAP_FACTOR in
+    mtl/merge.py, and it is why a shape signal has to carry this.
+
+    WHY TWO GATES. See the section comment above _column_respected_by_layout.
+    Shape alone proposed 103 splits across 59 pages, of which 12 were real;
+    layout agreement alone cannot propose anything. Together: 8 correct, 0
+    incorrect. The bar is precision, not recall — a missed split leaves the
+    page no worse than today, while a wrong split is permanent, because
+    _waist_separates_boxes will then also refuse to merge the halves back.
+    """
+    if not words or len(words) < 2:
+        return [(box, conf)]
+
+    centers = [((w[2][0] + w[2][2]) / 2.0) for w in words]
+    split_x = _waist_split_column(label_map, box[:4],
+                                  int(min(centers)), int(max(centers)), cache)
+    if split_x is None:
+        return [(box, conf)]
+    if not _column_respected_by_layout(split_x, box, all_boxes):
+        return [(box, conf)]
+
+    left  = [w for w, cx in zip(words, centers) if cx < split_x]
+    right = [w for w, cx in zip(words, centers) if cx >= split_x]
+    # A waist with every word on one side of it tells us nothing — the
+    # constriction is real but it isn't between these words.
+    if not left or not right:
+        return [(box, conf)]
+
+    out = []
+    for side in (left, right):
+        xs1 = min(w[2][0] for w in side); ys1 = min(w[2][1] for w in side)
+        xs2 = max(w[2][2] for w in side); ys2 = max(w[2][3] for w in side)
+        text = " ".join(w[0] for w in side)
+        # Min across the words, matching how _merge_bubble_regions scores a
+        # merged region from its parts — a group is only as trustworthy as
+        # its weakest member.
+        out.append(((xs1, ys1, xs2, ys2, text), min(w[1] for w in side)))
+
+    # THIRD gate, and the one that must come last: would the merge stage
+    # itself consider these two halves to be in different lobes? Layout
+    # agreement says the column is plausible; this says the two pieces we
+    # actually produced sit either side of it. Without it the corpus picks
+    # up four more splits, all wrong and two of them inside a single token
+    # ('LII"' -> 'LI'/'I"', '三ネコ' -> '三'/'ネ コ') — measured.
+    #
+    # It is also the reason a wrong split can never be repaired: the same
+    # veto refuses to merge the halves back afterwards. That asymmetry is
+    # why all three gates are ANDed rather than scored.
+    if not _waist_separates_boxes(out[0][0][:4], out[1][0][:4], label_map, cache):
+        return [(box, conf)]
+    return out
+
+
+def _split_fragments_at_waist(boxes, confidences, word_groups, label_map):
+    """Apply _split_fragment_at_waist across a page's fragments."""
+    if label_map is None or not word_groups:
+        return boxes, confidences
+    cache, out_boxes, out_confs, n_split = {}, [], [], 0
+    for i, (box, conf) in enumerate(zip(boxes, confidences)):
+        words = word_groups[i] if i < len(word_groups) else None
+        pieces = _split_fragment_at_waist(box, conf, words, label_map, boxes, cache)
+        if len(pieces) > 1:
+            n_split += 1
+        for pbox, pconf in pieces:
+            out_boxes.append(pbox)
+            out_confs.append(pconf)
+    if n_split:
+        print(f"  [OCR] RapidOCR: split {n_split} fragment(s) that spanned a "
+              f"fused bubble waist")
+    return out_boxes, out_confs
+
+
+def _rapidocr_fragment_boxes(arr_pre, arr_raw, lang: str, bubble_label_map=None):
     """RapidOCR fragments for a prepared page, including its zero-box retry.
 
     Same deferred-confidence contract as _easyocr_fragment_boxes. RapidOCR
@@ -2050,12 +2180,17 @@ def _rapidocr_fragment_boxes(arr_pre, arr_raw, lang: str):
     try:
         engine = _get_rapidocr_engine()
         with _rapidocr_infer_lock:
-            fragments, frag_confidences = _rapidocr_readtext_primary(engine, arr_pre, lang)
+            fragments, frag_confidences, word_groups =                 _rapidocr_readtext_primary(engine, arr_pre, lang)
     except Exception as e:
         abort(500, f"OCR failed: {e}")
 
     boxes       = _boxes_from_fragments(fragments)
     confidences = list(frag_confidences)
+    # Before anything downstream treats a fragment as one unit — a detector
+    # box drawn across two fused bubbles has to be divided first, because
+    # nothing after this point can divide one. See _split_fragment_at_waist.
+    boxes, confidences = _split_fragments_at_waist(
+        boxes, confidences, word_groups, bubble_label_map)
 
     if len(boxes) == 0:
         print(f"  [OCR] RapidOCR: zero boxes from preprocessed image — "
@@ -2063,15 +2198,23 @@ def _rapidocr_fragment_boxes(arr_pre, arr_raw, lang: str):
         try:
             min_conf = _MIN_CONF_MAP.get(lang, 0.35)
             with _rapidocr_infer_lock:
-                fragments2, conf2 = _rapidocr_readtext_primary(engine, arr_raw, lang)
+                fragments2, conf2, words2 =                     _rapidocr_readtext_primary(engine, arr_raw, lang)
             floor = max(min_conf - 0.05, 0.20)
-            for (bbox, text), conf in zip(fragments2, conf2):
+            kept_boxes, kept_confs, kept_words = [], [], []
+            for i, ((bbox, text), conf) in enumerate(zip(fragments2, conf2)):
                 if conf < floor:
                     continue
                 xs = [p[0] for p in bbox]
                 ys = [p[1] for p in bbox]
-                boxes.append((min(xs), min(ys), max(xs), max(ys), text))
-                confidences.append(conf)
+                kept_boxes.append((min(xs), min(ys), max(xs), max(ys), text))
+                kept_confs.append(conf)
+                kept_words.append(words2[i] if i < len(words2) else None)
+            # Same repair as the primary path — the fallback produces the
+            # same kind of fragment and can span a waist the same way.
+            kept_boxes, kept_confs = _split_fragments_at_waist(
+                kept_boxes, kept_confs, kept_words, bubble_label_map)
+            boxes.extend(kept_boxes)
+            confidences.extend(kept_confs)
             if boxes:
                 print(f"  [OCR] RapidOCR raw fallback recovered {len(boxes)} box(es)")
         except Exception as e:
@@ -2161,7 +2304,8 @@ def _run_rapidocr_detection(image_bytes: bytes, lang: str, margin_scale: float):
     """
     arr_pre, arr_raw, w, h, gray_orig, h_borders, v_borders, bubble_label_map = \
         _prepare_page_for_detection(image_bytes)
-    boxes, confidences = _rapidocr_fragment_boxes(arr_pre, arr_raw, lang)
+    boxes, confidences = _rapidocr_fragment_boxes(arr_pre, arr_raw, lang,
+                                                   bubble_label_map)
     return _finish_local_detection(boxes, confidences, lang, w, h,
                                     h_borders, v_borders, bubble_label_map,
                                     gray_orig, margin_scale)
@@ -3626,7 +3770,10 @@ def ocr_crop():
         if engine_name == "rapidocr":
             engine = _get_rapidocr_engine()
             with _infer_lock:
-                fragments, frag_confidences = _rapidocr_readtext_primary(engine, arr, lang)
+                # Word boxes are discarded here: this route has no merge step
+                # and no page-level bubble map, and a hand-drawn crop is one
+                # region by definition — nothing to divide.
+                fragments, frag_confidences, _ =                     _rapidocr_readtext_primary(engine, arr, lang)
         else:
             reader = _get_reader(lang)
             with _infer_lock:
