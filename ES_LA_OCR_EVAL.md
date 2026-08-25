@@ -211,26 +211,183 @@ the real page itself, which needs
 `eval_samples/es-la_shinobigoto_ch65_p05.png` and skips cleanly without it.
 
 **What this does NOT fix — RapidOCR on this same page.** The sweep changes
-ch65 p05 for EasyOCR but not for RapidOCR, and the reason is worth recording:
-RapidOCR emits `...SERÁS LA CONTRA MÍ EN` as a **single fragment box,
-x=1461–1976, 515px wide**, spanning both balloons (left lobe 1459–1692, right
-lobe 1696–1975). Its detector drew one box straight across the gap and read
-the two bubbles' text as one line.
+ch65 p05 for EasyOCR but not for RapidOCR, and the reason is a *different
+bug at a different stage*: RapidOCR emits `...SERÁS LA CONTRA MÍ EN` as a
+**single fragment box, x=1461–1976, 515px wide**, spanning both balloons.
+Its detector drew one box straight across the gap and read the two bubbles'
+text as one line, so the interleave exists before merging begins.
 
-That is a detection-level failure, and it is structurally out of the merge
-stage's reach: `_merge_bubble_regions` groups whole fragments and never
-splits one, so no veto — waist, border, component, or gap — can undo it.
-Fixing it would mean either splitting OCR boxes on a bubble-boundary signal
-before merging, or constraining the detector's box width. Neither is
-attempted here.
-
-So the honest scope of this fix: it resolves the *merge-stage* over-merge,
-which is what was reproducible on 10 pages per engine. Cross-bubble text that
-arrives already fused inside one OCR fragment is a separate, unfixed problem.
+`_merge_bubble_regions` groups whole fragments and never divides one, so no
+veto there can reach it. That is section G.
 
 Note this leaves the corpus-wide picture from before unchanged: region counts
 were already close (RapidOCR 556, EasyOCR 579), so this was a surviving
 specific case rather than a broad regression.
+
+---
+
+## G. Cross-bubble text inside ONE OCR fragment — FIXED
+
+**Status: fixed.** Three approaches failed first. Their measurements are kept
+because they are the expensive part, and because two of them look obviously
+correct until measured.
+
+### The problem
+
+Distinct from §F. There the two bubbles arrive as separate, correctly-read
+fragments and the *merge* stage wrongly groups them. Here they arrive already
+fused inside one fragment:
+
+    RapidOCR fragment, x1461-1976 (515px):  "...SERÁS LA CONTRA MÍ EN"
+                        left balloon ──┘     └── right balloon
+
+Nothing downstream can undo it, so the repair has to happen before fragments
+become merge input.
+
+### Recognition was never the problem
+
+Asking RapidOCR for `return_word_box=True` returns a box per word:
+
+    ...SERÁS   x1461-1623      LA   x1632-1683
+    CONTRA     x1701-1854      MÍ   x1872-1923      EN  x1924-1974
+
+All five words are correct. Only the grouping is wrong. Two measurements make
+this cheap to act on:
+
+- **The flag is free** — 7.28s vs 7.87s on a real page, inside the noise.
+- **The flag changes nothing else** — fragment-level `txts`, `boxes` and
+  `scores` are byte-identical with and without it, verified on two pages. So
+  it cannot perturb baseline OCR.
+
+That rules out re-OCR: the text already exists, correctly, and only needs
+dealing to the right side by its own x position.
+
+### Why the split point must be a waist, not a gap
+
+The gap between the two balloons' words is **18px**. The gap between two
+words *inside* the right balloon (`CONTRA`/`MÍ`) is also **18px**. No distance
+threshold separates 18 from 18 — the same impossibility already recorded for
+`HORIZONTAL_GAP_FACTOR` in `mtl/merge.py`.
+
+### Failed approach 1 — measure the waist across the fragment's own box
+
+The obvious move, and wrong. A fragment spanning both balloons reaches the
+outer edges of both, where the silhouette has already tapered **below** the
+waist between them. The profile is W-shaped:
+
+    extent at box edges:  290 and 287      waist between lobes:  402
+
+So the minimum lands on an edge and the ratio is **1.000** — "not pinched".
+
+### Failed approach 2 — measure between the outermost word centers
+
+Same failure, less obviously: the right-hand word sits near the balloon edge
+where extent is **372**, still below the 402 waist. Ratio **1.000** again.
+No choice of two endpoint samples can read a W.
+
+**What works for locating it: prominence.** Judge every column against the
+tallest column on *each side* of it, so the taper at either end can no longer
+set the bar. On the real page this reports **0.870 at x=1677** — exactly the
+lobe boundary — against 0.992 and 0.998 for single-bubble spans on the same
+page. This is `_waist_split_column`.
+
+### Failed approach 3 — trust prominence
+
+Prominence locates a real dip. It does not establish that the dip *separates
+these two words*. Measured over all 59 pages: **103 proposals, 12 genuine.**
+It cut inside single words:
+
+    TEN-  ->  TE / N-          PPA  ->  P / PA          QUE ERAS -> QUE / ERAS
+
+**Why no depth threshold rescues it.** `_component_column_extents` is a **1-D
+projection**. On ch64 p07 the component is two balloons stacked *diagonally*,
+fused into one blob whose union genuinely pinches — but both words are in the
+upper balloon. The projection collapses precisely the vertical dimension that
+distinguishes the two cases:
+
+| | waist / text height | waist / component height | verdict |
+|---|---|---|---|
+| ch65 p05 (cross-bubble) | 6.8 | 0.71 | should split |
+| ch64 p07 (one balloon) | 9.2 | 0.73 | must not split |
+| ch65 p11 (one balloon) | 10.4 | — | must not split |
+
+False positives score *higher* than true ones. There is no threshold here.
+
+### Failed approach 4 — a strict column gutter
+
+Next idea: a proposed column is a real boundary only if the page's other
+lines stop at it rather than run through it. Implemented strictly — zero
+crossing fragments, and fragments required on both sides — it keeps **1 of
+12**. The signal eats itself: on a page whose bubbles are systematically
+fused, *the other lines are cross-bubble fragments too*, so they cross the
+boundary as well.
+
+### What actually works
+
+Relaxing that gate turns it into a usable signal. Two parameters, both swept:
+
+| tolerated crossings | kept | correct | wrong |
+|---|---|---|---|
+| 0 | 1 | 1 | 0 |
+| **1** | **8** | **8** | **0** |
+| 2 | 15 | 11 | 4 |
+| 3 | 18 | 11 | 7 |
+| (no gate) | 35 | 12 | 23 |
+
+and the margin before a neighbouring line counts as *crossing*, as a fraction
+of its own height — because real left-balloon lines overrun the boundary by a
+few pixels (`CASTIGADA,` and `TERMINARÁ.` overrun by 12 and 11px, and at a
+tighter margin those two alone sink the page's only correct split):
+
+| margin | correct | wrong |
+|---|---|---|
+| 0.20 – 0.25 × height | 8 | 0 |
+| 0.28 × height and above | 8 | 1 |
+
+**Three gates, ANDed** (`_split_fragment_at_waist`):
+
+1. `_waist_split_column` — prominence, proposes *where*
+2. `_column_respected_by_layout` — do the neighbouring lines stop there
+3. `_waist_separates_boxes` — would the merge stage call the two halves
+   different lobes
+
+All three are needed. Dropping (3) and keeping (1)+(2) was measured: it adds
+four more splits, **all wrong**, two of them inside a single token
+(`LII"` → `LI`/`I"`, `三ネコ` → `三`/`ネ コ`).
+
+### Result
+
+Over all 59 pages, cached OCR so only the split varied:
+
+**4 pages changed, 8 fragments split, 0 wrong.** Net region change −2 (halves
+merging into their correct bubbles).
+
+    ch65 p03   '..i¿"REUBI- CASCADA TÚ'      ch66 p03  'COMENZAREMOS ESCUA-'
+    ch65 p03   'CANDO"?! LE LLAMAS...'       ch66 p03  'AHORA LA MISION DRON!'
+    ch65 p05   '...SERÁS LA CONTRA MÍ EN'    ch66 p03  'LOS UZEN ES LA ÚNICA'
+    ch66 p05   'PRIMERA VEZ PROBABLE..'      ch66 p03  'NO TIENEN HEREDERA'
+
+### Known limits
+
+**Four genuine cross-bubble fragments are declined** — two on ch65 p11, two
+on ch65 p17. Both pages are the self-defeating case: their other lines are
+themselves cross-bubble, so the layout gate sees 2–4 crossings and abstains.
+They are left no worse than before.
+
+**Precision is deliberately bought with recall.** A missed split leaves a page
+exactly as it is today. A wrong split is *permanent*: `_waist_separates_boxes`
+justifies the split and then also refuses to merge the halves back. That
+asymmetry is why the gates are ANDed rather than scored, and why the tolerance
+sits at 1 rather than 2.
+
+**RapidOCR only.** EasyOCR reports no per-word boxes, and did not make this
+error on the pages tested — its detections are narrower.
+
+**A split column can be right about *whether* and wrong about *where*.** On
+ch65 p17, `¿POR QUÉ TE VAYAMOS` is genuinely cross-bubble but the correct cut
+is `¿POR QUÉ TE` | `VAYAMOS`, not `¿POR` | `QUÉ TE VAYAMOS`. That case is
+declined by the layout gate here, so it does not currently bite — but the
+failure mode exists and is not guarded against.
 
 ### G. RapidOCR's own failures, for completeness
 

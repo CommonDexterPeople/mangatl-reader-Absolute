@@ -888,3 +888,147 @@ def _waist_separates_boxes(box_a: tuple, box_b: tuple, label_map, cache: dict) -
     if ends <= 0:
         return False
     return (waist / ends) <= _WAIST_RATIO_THRESHOLD
+
+
+# ─── Splitting ONE fragment drawn across two bubbles ─────────────────────────
+#
+# A detector can draw a single box across two fused balloons and read both
+# their lines as one string (see _split_fragment_at_waist in server.py). The
+# merge stage cannot repair that — it groups whole fragments and never divides
+# one — so the split has to happen before merging, which needs two things this
+# section provides: WHERE to cut, and WHETHER to trust the cut.
+#
+# The two are separate functions because they failed separately during
+# development, and both failure modes are worth not re-discovering:
+#
+#   - _waist_split_column alone fires on far more than fused balloons.
+#     Measured over 59 real pages: 103 proposals, of which only 12 were
+#     genuine. It proposed cutting inside single words ("TEN-" -> "TE"/"N-").
+#     A 1-D extent profile cannot tell "two balloons side by side" from "two
+#     balloons stacked diagonally, both words in the upper one" — the
+#     projection collapses exactly the vertical dimension that distinguishes
+#     them. Do not try to fix that with a depth threshold; it was tried, and
+#     real false positives score 9-10 on every depth measure while real true
+#     positives score 6-7.
+#
+#   - _column_respected_by_layout alone has nothing to say about where a
+#     boundary might be; it can only agree or disagree with a proposed one.
+#
+# Together they were measured at 8 correct splits and 0 incorrect ones over
+# the same 59 pages. Precision matters far more than recall here: a missed
+# split leaves text no worse than it is today, while a wrong split is
+# permanent — the same veto that justifies a split also prevents the halves
+# from merging back.
+
+# How far past the proposed column a fragment must reach before it counts as
+# crossing it, as a fraction of that fragment's own height. Not zero: a
+# left-bubble line's box routinely overshoots the balloon boundary by a few
+# pixels. Measured on the real ch65 p05 page, where 'CASTIGADA,' and
+# 'TERMINARÁ.' overrun the waist column by 12 and 11px while being entirely
+# inside the left balloon — at a smaller margin those two alone sink the
+# page's only correct split. Swept 0.20-0.40: 0.20-0.25 give 8 correct / 0
+# incorrect, 0.28 and above start admitting a false split.
+_SPLIT_STRADDLE_MARGIN_FACTOR = 0.25
+
+# How many crossing fragments are tolerated before the column is rejected.
+# Zero would be the natural choice and is wrong: on a page whose bubbles are
+# systematically fused, the OTHER lines are themselves cross-bubble fragments,
+# so they cross the boundary too and the evidence eats itself. Swept 0-5 —
+# 0 keeps only 1 of 12, 1 keeps 8 with nothing false, 2 admits 4 false splits.
+_SPLIT_MAX_STRADDLERS = 1
+
+# Vertical reach, in multiples of the fragment's height, over which other
+# fragments are consulted. Wide enough to see the rest of a bubble's lines,
+# narrow enough not to drag in unrelated panels.
+_SPLIT_LAYOUT_WINDOW_LINES = 3
+
+
+def _column_respected_by_layout(col: int, box, all_boxes) -> bool:
+    """
+    Does the rest of the page's text behave as if `col` were a real bubble
+    boundary — i.e. do the neighbouring lines stop at it rather than run
+    through it?
+
+    This is the confirmation half of the fragment split; see the section
+    comment above for why a shape signal alone is not enough. `box` is the
+    fragment being split (excluded from its own evidence) and `all_boxes` is
+    every fragment on the page as (x1, y1, x2, y2, text).
+    """
+    height = max(1.0, float(box[3]) - float(box[1]))
+    margin = _SPLIT_STRADDLE_MARGIN_FACTOR * height
+    reach  = _SPLIT_LAYOUT_WINDOW_LINES * height
+    lo, hi = float(box[1]) - reach, float(box[3]) + reach
+
+    straddlers = 0
+    for other in all_boxes:
+        if other is box:
+            continue
+        if float(other[3]) < lo or float(other[1]) > hi:
+            continue
+        if float(other[0]) < col - margin and float(other[2]) > col + margin:
+            straddlers += 1
+            if straddlers > _SPLIT_MAX_STRADDLERS:
+                return False
+    return True
+
+
+def _waist_split_column(label_map, box, x_lo: int, x_hi: int, cache: dict):
+    """
+    The x column at which ONE box's own span is pinched into two lobes, or
+    None if it isn't. A CANDIDATE only — see the section comment above and
+    _column_respected_by_layout, which decides whether to believe it.
+
+    WHY THIS ISN'T _waist_separates_boxes WITH ONE BOX. That function
+    compares the dip against the extent sampled at its two reference
+    columns. That works when the references are two fragments' centers,
+    which sit near their lobes' peaks. It does NOT work here: a fragment
+    spanning both bubbles reaches the outer edges of both, where the
+    silhouette has already tapered BELOW the waist between them. Measured
+    on the real page — box x1461-1976 over a waist of 402px: extent at the
+    box edges is 290 and 287, so the minimum lands on an edge and the ratio
+    comes out 1.000. Sampling at the outermost WORD centers instead gives
+    372 at the right-hand word and still scores 1.000. The profile is
+    W-shaped, and no choice of two endpoint samples reads a W correctly.
+
+    So this measures PROMINENCE instead: for every column, compare it
+    against the tallest column on each side of it. A dip only scores low if
+    the shape genuinely rises again on BOTH sides, and the taper at either
+    end of the span can no longer set the bar. On the real page this
+    reports 0.870 at x=1677 — exactly the lobe boundary — against 0.992 and
+    0.998 for single-bubble spans on the same page.
+    """
+    if label_map is None:
+        return None
+    lab = _dominant_component_for_box(label_map, box)
+    if lab == 0:
+        return None
+    ext, off = _component_column_extents(label_map, lab, cache)
+    if ext is None:
+        return None
+
+    i_a = max(0, int(x_lo) - off)
+    i_b = min(len(ext) - 1, int(x_hi) - off)
+    if i_b - i_a < _WAIST_MIN_SPAN_PX:
+        return None
+
+    span = np.asarray(ext[i_a:i_b + 1], dtype=float)
+    # Tallest column at or left of each position, and at or right of it.
+    # Their min is the height the dip is judged against: a column is only
+    # "pinched" if the shape is taller than it on both sides.
+    left_peak  = np.maximum.accumulate(span)
+    right_peak = np.maximum.accumulate(span[::-1])[::-1]
+    ends = np.minimum(left_peak, right_peak)
+    ratios = np.where(ends > 0, span / np.maximum(ends, 1.0), 1.0)
+
+    # Ends score 1.0 by construction (one side's peak is the column itself),
+    # so the margin is belt-and-braces against an outline nick just inside
+    # the span — same role as in the pairwise veto.
+    if len(ratios) <= 2 * _WAIST_MIN_INTERIOR_PX:
+        return None
+    ratios[:_WAIST_MIN_INTERIOR_PX] = 1.0
+    ratios[len(ratios) - _WAIST_MIN_INTERIOR_PX:] = 1.0
+
+    k = int(ratios.argmin())
+    if ratios[k] > _WAIST_RATIO_THRESHOLD:
+        return None
+    return off + i_a + k
