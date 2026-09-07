@@ -15,7 +15,8 @@ them, never logs them, and writes nothing to disk.
 
 | Risk | Defence | Where |
 |---|---|---|
-| SSRF — tricking the server into fetching arbitrary URLs | Image fetches are restricted to an allowlist of MangaDex CDN hosts (plus one exact opt-in Suwayomi `host:port`), not "any `https://`" | [`mtl/security.py`](mtl/security.py) |
+| SSRF — tricking the server into fetching arbitrary URLs | Image fetches are restricted to an allowlist of MangaDex CDN hosts (plus one exact opt-in Suwayomi `host:port`), not "any `https://`" — and **every redirect hop is re-checked against that same allowlist**, so an allowlisted host cannot redirect the fetch back off it | [`mtl/security.py`](mtl/security.py) |
+| XSS via a proxied response — a fetched body rendered on this app's own origin | `/proxy` serves an upstream `Content-Type` only if it is a real image type, otherwise `application/octet-stream`, always with `X-Content-Type-Options: nosniff` | [`mtl/security.py`](mtl/security.py), `proxy()` in [`server.py`](server.py) |
 | CSRF — a site you have open POSTing to your local server | Cross-origin `Origin` headers are rejected | `_block_cross_origin()` in [`server.py`](server.py) |
 | DNS rebinding — a hostile domain re-resolving to `127.0.0.1` to read responses | Unexpected `Host` headers are rejected | `_block_cross_origin()` in [`server.py`](server.py) |
 | Accidental network exposure | Refuses to start on a non-localhost address unless `MTL_ALLOW_EXPOSED=1` is set deliberately | `_check_exposure_or_exit()` in [`mtl/security.py`](mtl/security.py) |

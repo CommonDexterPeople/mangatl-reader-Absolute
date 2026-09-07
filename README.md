@@ -100,7 +100,7 @@ and it hands you back the same chapter, readable in your language, in your brows
 - Every translated chapter credits the original scanlation group with a link back to their MangaDex profile
 
 ### Built with care for a tool that talks to the internet
-- Image-fetching routes are restricted to an allowlist of MangaDex CDN hosts, not "any `https://` URL" — closes off a server-side request forgery (SSRF) path
+- Image-fetching routes are restricted to an allowlist of MangaDex CDN hosts, not "any `https://` URL" — closes off a server-side request forgery (SSRF) path. Redirects are re-checked against the same allowlist rather than followed blindly, so an allowlisted host can't hand the fetch onward to somewhere else, and a proxied response is only ever served back as an image type
 - All externally-sourced text (e.g. scanlation group names from the API) is HTML-escaped before rendering
 - Binds to `127.0.0.1` by default, and *refuses to start* on any other address unless you set `MTL_ALLOW_EXPOSED=1` — the server has no authentication of its own, so exposing it has to be a deliberate act rather than an easy-to-miss side effect
 - Rejects cross-origin requests and unexpected `Host` headers, so a random website you happen to have open can't drive the pipeline behind your back (CSRF), and a hostile domain can't re-resolve itself to `127.0.0.1` to read the responses (DNS rebinding)
