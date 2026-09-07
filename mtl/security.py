@@ -16,7 +16,7 @@ import base64
 import os
 import socket
 import sys
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from flask import abort
@@ -59,10 +59,15 @@ def _is_allowed_image_host(hostname: str) -> bool:
         return True
     return hostname.endswith(".mangadex.network") or hostname.endswith(".mangadex.org")
 
-def _validate_image_url(url: str):
-    """Parse + validate an image URL. Returns the parsed urllib result on
-    success; calls abort(400, ...) and does not return on failure."""
-    from urllib.parse import urlparse
+def _image_url_allowed(url: str):
+    """The allowlist decision on its own: the parsed urllib result if `url`
+    passes, None if it doesn't. Pure — no abort, no request context needed.
+
+    Split out of _validate_image_url so the SAME rule can be applied to a
+    redirect target (see _get_image_response), where there is no client to
+    send a 400 to and the failure means something different. One predicate,
+    two callers, no chance of the two drifting apart.
+    """
     parsed = urlparse(url)
 
     # Scoped Suwayomi carve-out — see SUWAYOMI_HOST above. Checked before the
@@ -72,10 +77,102 @@ def _validate_image_url(url: str):
         return parsed
 
     if not url.startswith("https://"):
-        abort(400, "Only HTTPS image URLs are accepted.")
+        return None
     if not _is_allowed_image_host(parsed.hostname or ""):
-        abort(400, "URL host is not an allowed MangaDex CDN host.")
+        return None
     return parsed
+
+def _validate_image_url(url: str):
+    """Parse + validate an image URL. Returns the parsed urllib result on
+    success; calls abort(400, ...) and does not return on failure."""
+    parsed = _image_url_allowed(url)
+    if parsed is not None:
+        return parsed
+    # Re-derive which rule rejected it, so the message still names the actual
+    # problem rather than a generic "not allowed".
+    if not url.startswith("https://"):
+        abort(400, "Only HTTPS image URLs are accepted.")
+    abort(400, "URL host is not an allowed MangaDex CDN host.")
+
+# ── Fetching an allowlisted image URL ─────────────────────────────────────────
+# _validate_image_url checks the URL the CLIENT supplied. requests.get()
+# follows redirects by default, and nothing re-checks where they lead — so an
+# allowlisted host answering "302 Location: http://127.0.0.1:9200/" walked the
+# fetch straight back out of the allowlist, and /proxy handed the response body
+# to the caller. Reproduced against the real /proxy call path: the fetch
+# reached an unrelated host and its body came back verbatim.
+#
+# That is not a hypothetical trust boundary. _is_allowed_image_host accepts any
+# *.mangadex.network host because MD@Home node names are dynamic — and those
+# nodes are run by volunteers, not by MangaDex. "An allowlisted host is
+# honest about where it points" was never a safe assumption.
+#
+# Redirects are followed rather than refused outright: a CDN is entitled to
+# redirect, and refusing would break a legitimate move between MD@Home nodes.
+# What changes is that every hop goes back through the same allowlist, so a
+# redirect can only ever move WITHIN the set of hosts already permitted.
+_MAX_IMAGE_REDIRECTS = 4
+
+# Redirect statuses judged by CODE, deliberately, rather than by requests'
+# own r.is_redirect. That property is `"location" in headers and status in
+# REDIRECT_STATI` — so a 302 carrying NO Location reads as False and would be
+# returned as if it were the image, handing the caller a redirect page's body
+# instead. Caught by test_ssrf_guard.py's /no-location case, which is why it
+# is in there.
+_REDIRECT_STATI = frozenset({301, 302, 303, 307, 308})
+
+def _get_image_response(url: str, timeout: int = 20):
+    """requests.get() for an image URL, re-validating every redirect hop.
+
+    `url` must already have passed _validate_image_url. Returns the final
+    non-redirect Response; calls abort(502, ...) and does not return if a
+    redirect leaves the allowlist, is malformed, or loops.
+    """
+    for _ in range(_MAX_IMAGE_REDIRECTS + 1):
+        r = requests.get(url, timeout=timeout, headers={"User-Agent": USER_AGENT},
+                         allow_redirects=False)
+        if r.status_code not in _REDIRECT_STATI:
+            return r
+
+        location = r.headers.get("Location", "")
+        r.close()
+        if not location:
+            abort(502, "Image host sent a redirect with no Location header.")
+        # A Location may legally be relative; resolve it against the URL we
+        # actually requested before judging the host, or a relative hop would
+        # be measured as a hostname-less URL and rejected for the wrong reason.
+        location = urljoin(url, location)
+        if _image_url_allowed(location) is None:
+            abort(502, "Image host redirected outside the allowed image hosts.")
+        url = location
+
+    abort(502, "Image host redirected too many times.")
+
+# ── Serving fetched bytes back to the browser ─────────────────────────────────
+# /proxy used to pass the upstream Content-Type through untouched, which hands
+# the remote server control of how the browser interprets the body. A response
+# declaring text/html is then RENDERED as HTML — on http://127.0.0.1:8080,
+# which is the origin holding every API key this app stores in localStorage.
+#
+# The cross-origin guard in server.py does not close this: it deliberately
+# allows a missing Origin (curl, scripts), and a top-level navigation to
+# /proxy?url=… sends none. That permissiveness is correct for what that guard
+# is for — the fix belongs on the response instead.
+#
+# Fail closed: anything not on this list is served as an opaque download rather
+# than guessed at. /proxy only ever carries page images, so a legitimate
+# response can't land outside it.
+_ALLOWED_IMAGE_CONTENT_TYPES = {
+    "image/jpeg", "image/png", "image/webp", "image/gif", "image/avif",
+}
+
+def _safe_image_content_type(raw: str) -> str:
+    """Reduce an upstream Content-Type to one a browser can only treat as an
+    image, or to application/octet-stream if it isn't one."""
+    # Strip any ";charset=…" parameter before matching — "image/png; charset=x"
+    # is the same type and must not fall through to the octet-stream branch.
+    base = (raw or "").split(";", 1)[0].strip().lower()
+    return base if base in _ALLOWED_IMAGE_CONTENT_TYPES else "application/octet-stream"
 
 # ── Local-source images (local folder / CBZ) ──────────────────────────────────
 # A local page never has an https:// CDN URL to fetch — the browser already
@@ -90,8 +187,10 @@ def _validate_image_url(url: str):
 #     shipping an oversized payload to a single-user local server), not host
 #     validation.
 #
-#   {"url": "https://uploads.mangadex.org/..."}  — existing MangaDex-CDN path,
-#     unchanged: _validate_image_url + requests.get, exactly as before.
+#   {"url": "https://uploads.mangadex.org/..."}  — MangaDex-CDN path:
+#     _validate_image_url on the URL the caller sent, then
+#     _get_image_response, which re-applies the same allowlist to every
+#     redirect hop rather than letting requests follow them unchecked.
 _MAX_IMAGE_B64_BYTES = 25 * 1024 * 1024  # ~25MB decoded — generous for a single scanned page
 
 def _load_image_bytes(body: dict) -> bytes:
@@ -124,7 +223,10 @@ def _load_image_bytes(body: dict) -> bytes:
     image_url = (body.get("url") or "").strip()
     _validate_image_url(image_url)
     try:
-        img_r = requests.get(image_url, timeout=20, headers={"User-Agent": USER_AGENT})
+        # Redirect hops are re-validated against the allowlist — see
+        # _get_image_response. Validating only the URL the caller sent left
+        # the allowlist escapable by any host willing to answer with a 302.
+        img_r = _get_image_response(image_url)
         img_r.raise_for_status()
     except requests.RequestException as e:
         abort(502, f"Image download failed: {e}")

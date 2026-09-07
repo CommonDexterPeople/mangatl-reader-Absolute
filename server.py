@@ -207,8 +207,11 @@ from mtl.security import (
     SUWAYOMI_HOST,
     _LOCALHOST_ADDRS,
     _check_exposure_or_exit,
+    _get_image_response,
+    _image_url_allowed,
     _is_allowed_image_host,
     _load_image_bytes,
+    _safe_image_content_type,
     _validate_image_url,
 )
 from mtl.geometry import (
@@ -2841,12 +2844,31 @@ def auth_refresh():
 # FIX #12 — /proxy is now actively used by the frontend for all image display
 @app.route("/proxy")
 def proxy():
+    """Fetch a page image from an allowlisted host and hand it to the browser.
+
+    Two things here are load-bearing and easy to undo by accident; both are
+    explained in full in mtl/security.py:
+
+      _get_image_response, not requests.get — every redirect hop is re-checked
+        against the allowlist. Plain requests.get() follows redirects without
+        re-validating, which made the allowlist escapable by any allowlisted
+        host willing to answer with a 302.
+
+      _safe_image_content_type + nosniff, not the upstream Content-Type —
+        reflecting it lets a remote host have its body rendered as HTML on
+        this app's own origin, which is where the browser keeps every stored
+        API key.
+    """
     url = request.args.get("url", "").strip()
     _validate_image_url(url)
     try:
-        r = requests.get(url, timeout=20, headers={"User-Agent": USER_AGENT})
+        r = _get_image_response(url)
         r.raise_for_status()
-        return Response(r.content, content_type=r.headers.get("Content-Type", "image/jpeg"))
+        return Response(
+            r.content,
+            content_type=_safe_image_content_type(r.headers.get("Content-Type")),
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
     except requests.RequestException as e:
         abort(502, f"CDN fetch failed: {e}")
 
