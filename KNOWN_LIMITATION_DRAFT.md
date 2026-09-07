@@ -983,3 +983,226 @@ over-merge this prevents, so ambiguity abstains.
    boxes. Measured: it does not. Slack between box edge and rightmost real ink
    is **1px** on all three caption fragments. The boxes are accurate; the text
    really is that close.
+
+---
+
+## CONFIRMED on synthetic pages, UNMEASURED on real manga: vertical Japanese is collapsed into one region and ordered backwards
+
+Prompted by the hypothesis that RapidOCR handles Japanese well enough to be
+worth a `_LOCAL_ENGINE_RECOMMENDATION` entry. It does. That part of the
+question resolves cleanly. But testing it surfaced a defect one layer down,
+in the geometry rather than the OCR, and that is what this entry is about.
+
+### The engine question, answered first
+
+Both detection functions in `server.py`, called directly with `lang='ja'`,
+against two synthetic pages carrying the same seven strings (hiragana,
+katakana and kanji, mixed):
+
+| page | RapidOCR | EasyOCR |
+| --- | --- | --- |
+| horizontal | **7/7**, 11.2s | 7/7, 43.7s |
+| vertical | **7/7**, 6.0s | **0/7**, 10.8s |
+
+RapidOCR resolves `PP-OCRv6_det_small` / `PP-OCRv6_rec_small`, not the older
+Chinese-only recogniser the `'ko'` entry above was written against — its
+dictionary covers kana, and `ch_ppocr_mobile_v2.0_cls_mobile` handles the
+column orientation. EasyOCR does not merely degrade on vertical text; it
+fails outright, returning two garbage fragments (`'藁華`, `そ`) and zero
+regions.
+
+Worth recording because the `'ko'` entry's reasoning ("RapidOCR's bundled
+model doesn't cover Korean at all") invites the assumption that the same
+holds for Japanese. It does not, and that assumption is now measurably wrong.
+
+### The actual defect: correct fragments, wrong grouping, wrong order
+
+The vertical page produced seven correct fragments and one region:
+
+```
+region text: 'なにこれ 明日 東京 ドキドキ カタカナ まって ありがとう'
+```
+
+Two separate failures in that single line.
+
+**1. Seven columns merged into one region.** The fragment boxes (percent,
+`[x0, y0, x1, y1]`) are seven narrow, vertically-tall bars sitting side by
+side:
+
+| fragment | box | width | vertical extent |
+| --- | --- | --- | --- |
+| なにこれ | `[8.6, 5.8, 18.5, 47.4]` | 9.9% | 5.8-47.4 |
+| 明日 | `[21.8, 5.8, 31.5, 26.9]` | 9.7% | 5.8-26.9 |
+| ありがとう | `[84.9, 5.6, 94.6, 58.2]` | 9.7% | 5.6-58.2 |
+
+Every column shares a top edge and overlaps every other column's vertical
+extent, because that is what a vertical column *is*. Baseline clustering
+reads that as one line of text and merges the lot. The assumption is correct
+for horizontal lettering and structurally wrong for vertical, and no
+sensitivity value fixes it — the geometry is not ambiguous, it is being asked
+the wrong question.
+
+**2. Reading order is reversed.** Japanese columns read right-to-left.
+`ありがとう` is the rightmost fragment (x0 84.9) and therefore first; it
+comes out last. `server.py:3888` already encodes the correct rule
+(`"right-to-left for Japanese/Korean, left-to-right otherwise"`) but that
+lives in the Vision prompt. The local geometry path has no equivalent, so
+every locally-OCR'd Japanese page is ordered backwards regardless of engine.
+
+### What this does NOT establish — do not treat it as measured
+
+The evidence is synthetic and the gap to the es-la and pt-br evals is wide.
+Rendered with Yu Gothic Bold, black on pure white, generous character
+spacing. Specifically absent:
+
+- **Furigana.** Ruby text running alongside a column is the single largest
+  confounder in real Japanese manga OCR, and there is none here. Nothing in
+  this test predicts behaviour when it is present.
+- Bubbles, artwork, screentone, stylised SFX, low resolution.
+- Any bubble boundary *between* the columns — so the 7-into-1 merge may be
+  partly an artifact of the render. Bare adjacent columns with no separating
+  outline are a case where merging is not obviously wrong. On a real page the
+  container vetoes (`_different_containers_separate_boxes`) would have
+  something to work with, and might already prevent the collapse.
+
+Capability is proven. Quality is not. This is one constructed input, which is
+the standard the "Known, not yet hit" entry above is explicitly held to.
+
+### Deliberately not changed yet
+
+- No `'ja'` entry added to `_LOCAL_ENGINE_RECOMMENDATION`. The harness
+  docstring says recommendations get replaced by real samples, not by one
+  manually-tested page, and `eval_samples/` currently holds no Japanese
+  pages at all.
+- No `'ja'` entry added to `_MIN_CONF_MAP`; it remains on the default floor.
+- No reading-order reversal added. Flipping the sort for `ja`/`ko` is a
+  two-line change and is almost certainly correct, but it interacts with the
+  merge defect above: reversing the order of a region that should never have
+  been one region produces a differently-wrong answer, not a right one.
+  Fixing the grouping first, on real pages, is the order that lets each
+  change be verified on its own.
+
+Note that `'ja'` is in `VISION_LANGS`, so on `smart` with a Gemini key
+Japanese already routes to Vision and the local engine only double-checks
+box positions. This defect bites keyless users, `off` users, and anyone
+trying to reduce Vision spend on Japanese — not the default path with a key
+on file.
+
+### Reproduction
+
+Render any page of vertical Japanese (columns top-to-bottom, right-to-left),
+then:
+
+```python
+import server
+regions, raw, _, _ = server._run_rapidocr_detection(open(p, "rb").read(), "ja", 0.5)
+print(len(raw), "fragments ->", len(regions), "regions")
+print(regions[0]["text"])
+```
+
+Expect N correct fragments, 1 region, and the columns in left-to-right order.
+
+---
+
+## MEASURED, NOT BUILT: PaddleOCR as a third "strongest but hardest to set up" engine — it is already the second engine's parameters
+
+**Status: nothing added to the codebase.** The premise dissolved on
+inspection, and the measurements that followed argued against the feature on
+its own terms. Kept here because the obvious next person to have this idea is
+me in six months.
+
+**The premise was wrong at the root.** RapidOCR *is* PaddleOCR. What
+`_get_rapidocr_engine` loads today is `PP-OCRv6_det_small.onnx` /
+`PP-OCRv6_rec_small.onnx` — PaddleOCR's own models, running on ONNX Runtime
+instead of the PaddlePaddle framework. "Add PaddleOCR as a third engine" is
+therefore not an integration; it is a `params` dict on the engine already
+shipped:
+
+```python
+from rapidocr import RapidOCR, ModelType, OCRVersion, LangRec
+RapidOCR(params={"Rec.lang_type":   LangRec.JAPAN,
+                 "Rec.model_type":  ModelType.SERVER,
+                 "Rec.ocr_version": OCRVersion.PPOCRV5})
+```
+
+`EngineType` also offers `PADDLE`, `TORCH`, `OPENVINO`, `TENSORRT`, `MNN`, so
+even "run on the real PaddlePaddle backend" is a parameter rather than a
+second code path.
+
+**Integration detail that will cost twenty minutes if forgotten:** params must
+be *enum-typed*. `config.yaml` stores them as strings (`lang_type: "ch"`),
+which makes `{"Rec.lang_type": "japan"}` look correct; it raises
+`TypeError: The value of Rec.ocr_version must be Enum Type`.
+
+**What was measured.** Both synthetic Japanese pages from the vertical-text
+entry above, same seven strings, same machine, CPU only:
+
+| config | download | init | horizontal | vertical | per page |
+| --- | --- | --- | --- | --- | --- |
+| unified PP-OCRv6 **small** (shipped) | 30MB bundled | 1.5-2.0s | 7/7 | **7/7** | ~6-8s |
+| `japan` PP-OCRv4 rec | small | 2.1s | 7/7 | 6/7 | ~7s |
+| PP-OCRv6 **medium** | — | 4.2s | 7/7 | 6/7 | 63-66s |
+| PP-OCRv5 **server** | **165MB** | 28.5s | 7/7 | **4/7** | **~300s** |
+
+Vertical accuracy runs backwards as the model grows — 7, 6, 6, 4 — while
+per-page cost rises roughly 40-50x. The language-specific Japanese model was
+also worse than the unified one, which is the opposite of the intuition that
+motivated the idea.
+
+**One confound, named rather than buried.** The server row pulled
+`ch_PP-OCRv5_det_server` / `ch_PP-OCRv5_rec_server` — the *Chinese* server
+models, because only `model_type` was set and `lang_type` defaults to `ch`.
+That row therefore varies version, size and language at once and overstates
+the effect. The clean comparison is within PP-OCRv6, same language, size the
+only variable: **small 7/7 vs medium 6/7**. The direction survives; the
+magnitude does not.
+
+**What this does NOT establish.** The same limits as the vertical-text entry
+above, plus one specific to this test: the baseline already scores 7/7, so
+there is **no headroom** — this design can detect a regression and can never
+detect an improvement. It is evidence against "obviously stronger," not
+evidence for "never better." Furigana, stylised lettering and real screentone
+are exactly where a specialised model would earn its keep, and none of them
+are present. A Korean-model trial was also run and is worth nothing: it was
+scored against the Japanese images, so its 0/7 measures the test, not the
+model.
+
+**Why it was not built, even setting the numbers aside.**
+
+  1. **Speed is disqualifying on its own.** ~300s/page against ~7s turns a
+     20-page chapter from ~2.5 minutes into ~100 minutes. "4-7x faster than
+     EasyOCR" is a claim in the README and a reason RapidOCR is the packaged
+     build's only engine.
+  2. **PaddlePaddle would never reach the installer.** The packaged build
+     ships RapidOCR alone precisely because bundling torch was too heavy;
+     `paddlepaddle` is the same class of dependency. The result would be
+     installer users on one engine and source users on three.
+  3. **It triggers a refactor ROADMAP.md already flagged** — *"two parallel
+     copies is reasonable, three starts to smell like it wants a real
+     refactor."* The params route avoids adding a third engine at all, so
+     that refactor stays deferred rather than forced.
+
+**What survives the measurement: coverage, not strength.** `LangRec` exposes
+`KOREAN`, `TH`, `ARABIC`, `CYRILLIC`, `LATIN`, `DEVANAGARI` and others. The
+`'ko'` entry in `_LOCAL_ENGINE_RECOMMENDATION` says RapidOCR "doesn't cover
+Korean at all" — true of the *default bundled model*, not of RapidOCR, and
+`_get_rapidocr_engine`'s docstring already anticipated exactly this ("would
+need an explicit per-language model fetch from RapidOCR's own model catalog").
+Those languages are Vision-only today, so serving them locally is a real gain
+for keyless and DeepSeek-only users, at no new dependency and inside the
+packaged build.
+
+**The trade-off any such change must not lose.** Per-language models give up
+the property that makes RapidOCR good here. `_get_rapidocr_engine`'s docstring
+records that the unified character set is *why* RapidOCR handled the
+language-mismatch case — a Portuguese page inside a Spanish-declared chapter —
+where EasyOCR degraded because it was bound to the chapter's declared
+language. A per-language override reintroduces that exact failure mode. It has
+to be additive and opt-in, with the unified model remaining the default and
+the fallback, or it trades a measured strength for an unmeasured one.
+
+**Reproduction.** Any page, plus the params dict above; vary one of
+`Rec.model_type` / `Rec.ocr_version` / `Rec.lang_type` at a time and hold the
+other two fixed, which is the discipline the server row above did not observe.
+Note that model downloads come from `modelscope.cn` and will fail behind TLS
+interception until `truststore.inject_into_ssl()` runs first.
