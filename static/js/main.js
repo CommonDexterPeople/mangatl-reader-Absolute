@@ -51,6 +51,8 @@ import * as ns_erase_tool from './erase-tool.js';
 import * as ns_merge_tuner from './merge-tuner.js';
 import * as ns_trans_rail from './trans-rail.js';
 import * as ns_onboarding from './onboarding.js';
+import * as ns_llm_export_format from './llm-export-format.js';
+import * as ns_llm_export from './llm-export.js';
 
 import { refreshCacheUI } from './cache.js';
 import { _renderHistoryUI } from './history.js';
@@ -114,6 +116,8 @@ Object.assign(
   ns_merge_tuner,
   ns_trans_rail,
   ns_onboarding,
+  ns_llm_export_format,
+  ns_llm_export,
 );
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────

@@ -79,9 +79,11 @@ export async function chapterFromMangaDex(chapterId, quality = 'data', signal, {
 // reader, 'erase-' for the Erase Tool). These build the handler set once and
 // let each screen supply the prefix and what to do with the resulting Chapter.
 //
-// `guard` is optional and returns false to abort: the reader uses it to refuse
-// a load when no API key is set, since translating is the whole point there.
-// The Erase Tool passes none — erasing needs no key.
+// `guard` is optional and returns false to abort: the reader uses it to check
+// the API key before a load — refusing a key that belongs to the wrong
+// provider, and confirming the OCR-only path when there is no key at all
+// (see _validateApiKeyOrToast in pipeline.js). The Erase Tool passes none —
+// erasing needs no key.
 
 /** Handlers for the "Local Folder / CBZ" source controls. */
 export function makeLocalSourceUI({ idPrefix = '', onChapter, guard }) {

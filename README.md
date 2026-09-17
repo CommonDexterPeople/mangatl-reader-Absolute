@@ -84,6 +84,14 @@ and it hands you back the same chapter, readable in your language, in your brows
 - Per-page **↻ retry** and **✏ fix** (jumps straight to the correction UI for that page)
 - Download-as-you-go: the zip is available as soon as one page finishes, and can be re-downloaded after fixing more
 
+### Translate with a chat AI instead — no API key
+- **🤖 LLM Export** in the reader turns the chapter's OCR'd text into one `.md` file with the translation instructions at the top, one line per bubble (`P3B2: ¿Qué es esto?`, with `[sfx]` / `[sign]` / `[narration]` tags where they matter). Upload it to ChatGPT, Claude, Gemini or DeepSeek — free tiers work — and paste the reply back
+- Works with **no API key at all**: open a chapter without one and it's OCR'd locally with placeholder translations, ready to export. The chat session also sees the whole chapter in one prompt, which is better context than the per-page API path gets
+- Import is a **review, not an overwrite**: every returned line is matched to its ID and shown as a diff you approve line by line, with duplicates, wrapped lines, unchanged lines, missing IDs and unknown IDs each called out. Positions never leave the tool, and import only ever fills a translation on a region that already exists
+- Partial replies are a normal outcome, not an error — import what came back, then export again with **only untranslated entries** to send just the rest. "Pages per file" splits a long chapter for free tiers that cut replies off
+- The same mechanism **polishes** an existing translation (send the current translation instead of the source), and your per-series glossary travels inside the file
+- Applied lines go through the same saved-corrections path as ✏ Correct, so they survive a reload and feed ⬇ Export Typeset
+
 ### Typesetting quality
 - OpenCV inpainting for textured or shaded bubbles; a cheap flat-fill for plain white/pale ones, auto-routed per region
 - Automatic black/white text color choice based on each erased region's own brightness — no black-on-black on dark caption boxes
@@ -149,7 +157,8 @@ installs what's missing on startup (PyTorch being most of it), and EasyOCR
 fetches its language model the first time you actually OCR a page — not at
 startup. The browser opens on its own when the server is ready.
 
-**Then you need an API key.** Translation is the one part that isn't local:
+**Then you need an API key** — or a free chat AI. Translation is the one part
+that isn't local. The smooth path is a key:
 
 - **Gemini** — free tier, no card: [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey). Also unlocks Vision OCR, which is what handles Japanese, Korean, Chinese, Thai, Cyrillic and Vietnamese well.
 - **DeepSeek** — roughly $0.02–0.05 per chapter: [platform.deepseek.com](https://platform.deepseek.com)
@@ -158,6 +167,12 @@ startup. The browser opens on its own when the server is ready.
 Paste it into the key field on the main screen. It is stored in your browser's
 `localStorage` and sent to your own local server, never anywhere else — see
 [SECURITY.md](SECURITY.md).
+
+**No key at all?** Open the chapter anyway. It is OCR'd on your machine but
+not translated; **🤖 LLM Export** in the reader then saves the text as one
+file you upload to ChatGPT, Claude, Gemini or DeepSeek, and you paste the
+reply back (see [Translate with a chat AI instead](#translate-with-a-chat-ai-instead--no-api-key)).
+Slower and by hand, but free and key-free.
 
 ---
 
@@ -168,7 +183,7 @@ Paste it into the key field on the main screen. It is stored in your browser's
   `requests`, `pillow` and `torch` require 3.10+). Python 3.9 has been
   end-of-life since October 2025 and 3.10 reaches it in October 2026.
 - An internet connection (for MangaDex chapters, Vision OCR, and translation)
-- A free **Gemini** API key ([aistudio.google.com](https://aistudio.google.com/app/apikey)) **or** a **DeepSeek** key (roughly $0.02–0.05 per chapter)
+- A free **Gemini** API key ([aistudio.google.com](https://aistudio.google.com/app/apikey)) **or** a **DeepSeek** key (roughly $0.02–0.05 per chapter) — **or** no key and a free chat AI account, via 🤖 LLM Export
 
 ---
 
@@ -231,7 +246,7 @@ three things about `static/js/` that will bite you before you notice them.
 ## Known limitations
 
 - Local-folder/CBZ pages don't persist across a reload (see [above](#local-folder--cbz-mode)) — this is a deliberate trade-off, not a bug, since caching a chapter whose images can never re-render would be worse than no cache entry at all.
-- Eight test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, four bubble-segmentation cases, the merge pipeline's individual stages, and the model registry's consistency across the picker, `MODEL_INFO` and `rates.json`; there's no broader suite beyond those yet. The four bubble-segmentation suites are synthetic geometry apart from two checks that run against a real page when `eval_samples/` is present, and the stage tests are synthetic by design — they pin each stage's contract, not the real-page tuning of the constants, which lives in `KNOWN_LIMITATION_DRAFT.md`. Nothing covers the routes, the translation providers, or any of `static/js/`. All eight run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
+- Nine test files cover the SSRF allowlist, the DeepSeek JSON-rescue heuristic, four bubble-segmentation cases, the merge pipeline's individual stages, the model registry's consistency across the picker, `MODEL_INFO` and `rates.json`, and — the one JavaScript test — the 🤖 LLM Export file format and reply parser (`test_llm_export_format.mjs`, run with Node); there's no broader suite beyond those yet. The four bubble-segmentation suites are synthetic geometry apart from two checks that run against a real page when `eval_samples/` is present, and the stage tests are synthetic by design — they pin each stage's contract, not the real-page tuning of the constants, which lives in `KNOWN_LIMITATION_DRAFT.md`. Nothing covers the routes, the translation providers, or the rest of `static/js/` (the parser is testable only because it is kept in an import-free module). All nine run in CI on every push/PR (`.github/workflows/ci.yml`), alongside a syntax check of every JS and Python file and a `build.py` smoke test that confirms the single-file build still imports standalone.
 
 ---
 

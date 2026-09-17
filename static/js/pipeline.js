@@ -10,8 +10,10 @@
 
 // Shared by startPipeline() (MangaDex) and the local-folder/CBZ entry point
 // in local-source.js — same key, same provider, same validation either way.
-// Returns the trimmed key on success (and saves it), or null after already
-// showing the person a toast explaining why.
+// Returns something truthy when the chapter may load — the trimmed key (and
+// saves it), or `true` for the no-key case below — and null, after a toast
+// explaining why, for a key that belongs to a different provider than the
+// one selected, since that can never work.
 import { getCachedChapter, getEffectivePageRegions, refreshCacheUI, setCachedChapter } from './cache.js';
 import { resetChapterCost } from './cost-tracker.js';
 import { setActiveGlossary } from './glossary.js';
@@ -39,7 +41,7 @@ import {
   setPrevChapterId,
 } from './state-and-constants.js';
 import { makeSuwayomiSourceUI } from './chapter-source.js';
-import { getModelInfo, getTargetLang, translateBatch } from './translate-client.js';
+import { getModelInfo, getTargetLang, hasTranslatorKey, translateBatch } from './translate-client.js';
 import {
   _clearChapterState,
   runConcurrent,
@@ -54,7 +56,23 @@ export function _validateApiKeyOrToast() {
   const key  = document.getElementById('ai-key').value.trim();
   const info = getModelInfo();
 
-  if (!key) { toast(`Enter your ${info.label} API key.`); return null; }
+  if (!key) {
+    // No key is not a dead end any more. OCR is local and free, so the
+    // chapter can still be read in — regions get a '—' placeholder instead
+    // of a translation (see _ocrTranslatePages) — and 🤖 LLM EXPORT in the
+    // reader turns that into a file a free chat AI translates, whose reply
+    // is pasted back (llm-export.js). A confirm rather than a silent
+    // fallthrough: someone who merely forgot to paste a key should not end
+    // up with an OCR-only chapter in the cache without being told.
+    const ok = confirm(
+      `No ${info.label} API key is set.\n\n` +
+      `OK — open the chapter anyway. Pages are OCR'd here, locally, but not translated; ` +
+      `🤖 LLM EXPORT in the reader then translates them through a free chat AI ` +
+      `(ChatGPT, Claude, Gemini, DeepSeek) with no key at all.\n\n` +
+      `Cancel — go back and paste a key first.`
+    );
+    return ok ? true : null;
+  }
 
   // Validate key format matches the selected provider
   const keyIsGemini   = key.startsWith('AIza');
@@ -303,7 +321,13 @@ export async function _ocrTranslatePages(urls, sourceLang, targetLang, signal, o
         if (onPageDone) onPageDone(i, [], { ocrData, sortedOcr: null });
       } else {
         const sortedOcr = _sortRegions(ocrResult, ocrData.hBorders, ocrData.vBorders);
-        const translated = await translateBatch(sortedOcr, sourceLang, targetLang, signal);
+        // OCR-only mode: with no key on file there is nothing to call, so
+        // every region keeps the '—' placeholder the map below already
+        // falls back to. 🤖 LLM EXPORT fills them in later — see
+        // llm-export.js and _validateApiKeyOrToast above.
+        const translated = hasTranslatorKey()
+          ? await translateBatch(sortedOcr, sourceLang, targetLang, signal)
+          : [];
         const regions = sortedOcr.map((r, j) => ({
           text: r.text || '',
           t:  translated[j]?.t  || 'speech',
@@ -431,7 +455,8 @@ export async function _runChapterPipeline({ chapterId, urls, meta, sourceLang, t
       }
       setProgress(i + 1, total);
     });
-    setStatus(`Done · ${total} pages · from cache`);
+    setStatus(`Done · ${total} pages · from cache` +
+              (cached.ocrOnly ? ' · OCR only — 🤖 LLM EXPORT to translate, or clear the cache and reopen with a key' : ''));
     resolveAdjacentChapters();
     return;
   }
@@ -443,7 +468,11 @@ export async function _runChapterPipeline({ chapterId, urls, meta, sourceLang, t
   // status line) via callbacks, so the actual OCR/translate logic lives
   // in exactly one place instead of being duplicated between the live
   // reader and queue.js's headless runs.
-  setStatus(`0 / ${total} pages translated`);
+  // OCR-only (no key — see _validateApiKeyOrToast): say so in the status
+  // line rather than claiming pages were "translated".
+  const ocrOnly = !hasTranslatorKey();
+  const doneWord = ocrOnly ? "OCR'd" : 'translated';
+  setStatus(`0 / ${total} pages ${doneWord}`);
   const pageRegions = await _ocrTranslatePages(urls, sourceLang, targetLang, signal, {
     onPageDone: (i, regions, { ocrData, sortedOcr }) => {
       const url = urls[i];
@@ -495,16 +524,24 @@ export async function _runChapterPipeline({ chapterId, urls, meta, sourceLang, t
     },
     onProgress: (doneCount, pageTotal) => {
       setProgress(doneCount, pageTotal);
-      if (!cancelled) setStatus(`${doneCount} / ${pageTotal} pages translated`);
+      if (!cancelled) setStatus(`${doneCount} / ${pageTotal} pages ${doneWord}`);
     },
     isCancelled: () => cancelled,
   });
 
 
   if (!cancelled) {
-    setStatus(`Done · ${total} pages`);
+    setStatus(`Done · ${total} pages` + (ocrOnly ? ' · OCR only — 🤖 LLM EXPORT to translate' : ''));
     if (cacheable) {
-      setCachedChapter(chapterId, { meta, targetLang, pageRegions });
+      // ocrOnly is recorded so the cache-hit branch above can label the
+      // chapter honestly next time. It does NOT invalidate the entry when a
+      // key appears later: translations imported through 🤖 LLM EXPORT
+      // live in mtl_corr_* on top of this entry, and silently re-running
+      // the chapter through a paid API would both spend money unasked and
+      // hide them. To translate an OCR-only chapter through the API
+      // instead, clear the cache (✕ clear in the reader header) and
+      // reopen it with a key.
+      setCachedChapter(chapterId, { meta, targetLang, pageRegions, ...(ocrOnly ? { ocrOnly: true } : {}) });
       refreshCacheUI();  // update pill after new chapter is cached
     }
     resolveAdjacentChapters();

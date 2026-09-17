@@ -22,6 +22,15 @@ Run the tests before opening a PR. They're plain scripts, no pytest:
 for t in test_*.py; do python "$t" || break; done
 ```
 
+```bash
+node test_llm_export_format.mjs
+```
+
+The second is the one JavaScript test: it imports
+`static/js/llm-export-format.js` directly, which is the reason that module
+has no imports of its own — everything else under `static/js/` reads
+`localStorage` or the DOM at import time and can't be loaded by Node.
+
 CI runs all of them on every PR against `main`, plus a syntax check of every
 JS and Python file and a `build.py` smoke test.
 

@@ -11,8 +11,10 @@
  * 2. THE API KEY. Section 1 asks for one and links to the provider. Getting a
  *    Gemini key is four clicks, but only if you already know it is four clicks
  *    and what an "API key" is. This is the single hardest gate for a
- *    non-technical user, and it cannot be removed — translation needs a key,
- *    which is what keeps the tool free and stops the author paying for
+ *    non-technical user. It is no longer an absolute one — 🤖 LLM Export
+ *    (llm-export.js) translates a chapter through a free chat AI with no key
+ *    at all, and the guide says so — but the key remains the smooth path,
+ *    and what keeps the tool free rather than the author paying for
  *    everyone's chapters. So it is a step to be walked through, not hidden.
  *
  * Both are DISMISSIBLE and both hide themselves once they are moot: the intro
@@ -118,6 +120,12 @@ export function refreshKeyGuide() {
         <div class="key-guide-note">
           The key is stored in this browser only, and is sent to the translation
           provider you picked — never anywhere else.
+        </div>
+        <div class="key-guide-note">
+          <b>No key at all?</b> Open a chapter anyway — it is read (OCR) on this
+          machine but not translated — then use <b>🤖 LLM Export</b> in the reader:
+          it saves the text as one file you upload to ChatGPT, Claude, Gemini or
+          DeepSeek, and you paste the reply back. Free tiers work.
         </div>
       </div>` : ''}
   `;

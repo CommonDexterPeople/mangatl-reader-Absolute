@@ -12,7 +12,7 @@ import { openCorrection } from './correction-ui.js';
 import { _ENGINE_LABEL, _pageStore, maybeShowEngineRecommendation, ocrPage } from './ocr-client.js';
 import { toggleReorderPanel } from './reorder-ui.js';
 import { _activeChapterId, _manualOrder, _sortRegions } from './state-and-constants.js';
-import { getModelInfo, getTargetLang, translateBatch } from './translate-client.js';
+import { getModelInfo, getTargetLang, hasTranslatorKey, translateBatch } from './translate-client.js';
 import { esc, toast } from './utils.js';
 
 export function addSkeleton(i) {
@@ -269,7 +269,11 @@ export async function _ocrTranslateAndRenderPage(el, pageIdx, total, cdnUrl, img
   }
   // Sort regions per user's reading order preference
   const sortedOcr = _sortRegions(ocrResult, ocrData.hBorders, ocrData.vBorders);
-  const translated = await translateBatch(sortedOcr, sourceLang, targetLang);
+  // OCR-only when no key is on file — same rule as pipeline.js's
+  // _ocrTranslatePages; the '—' fallbacks below are the placeholder.
+  const translated = hasTranslatorKey()
+    ? await translateBatch(sortedOcr, sourceLang, targetLang)
+    : [];
   const regions    = sortedOcr.map((r, j) => ({
     text: r.text || '',   // needed so re-translate works if this page is cached
     t:  translated[j]?.t  || 'speech',

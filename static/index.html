@@ -724,6 +724,10 @@
               onclick="exportTypesetChapter()" title="Download this chapter as typeset image files">
         ⬇ Export Typeset
       </button>
+      <button class="btn-export" id="btn-llm-export" onclick="llmxToggle()"
+              title="Translate this chapter with a free chat AI (ChatGPT, Claude, Gemini, DeepSeek) — no API key needed. Export the text as one file, upload it, paste the reply back.">
+        🤖 LLM Export
+      </button>
       <div class="cost-badges">
         <span class="cost-badge" id="cost-badge-chapter" onclick="showCostSettings()">This chapter: $0.00</span>
         <span class="cost-badge" id="cost-badge-lifetime" onclick="showCostSettings()">Lifetime: $0.00</span>
@@ -761,6 +765,10 @@
   </div>
 
   <div id="export-panel" class="export-panel"></div>
+  <!-- 🤖 LLM Export — export the chapter's text for a chat AI, import the
+       reply. Same panel styling as the typeset export above; content is
+       rendered by llm-export.js when opened. -->
+  <div id="llm-export-panel" class="export-panel"></div>
 
   <div id="reader-body">
     <div id="pages-container"></div>

@@ -46,6 +46,15 @@ export function getModelId() {
   return val.split('|')[1] || 'gemini-3.5-flash';
 }
 
+// True when the key field holds something. The chapter pipeline uses this
+// to choose between translating through the API and OCR-only mode, where
+// regions are stored with a '—' placeholder for 🤖 LLM Export to fill from
+// a chat AI (see llm-export.js). Presence only — whether the key matches the
+// selected provider is _validateApiKeyOrToast()'s job at chapter start.
+export function hasTranslatorKey() {
+  return !!(document.getElementById('ai-key')?.value?.trim());
+}
+
 export function onModelChange() {
   const info     = getModelInfo();
   const keyEl    = document.getElementById('ai-key');

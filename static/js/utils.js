@@ -184,7 +184,15 @@ export function _clearChapterState({ keepLocalRefs = [] } = {}) {
   setChapterEngineOverride(null);
   setEngineRecShown(false);
   hideEngineRecBanner();
+  for (const fn of _afterClearChapterStateHooks) fn();
 }
+
+// llm-export.js keeps per-chapter UI (its panel, a pending review) that has
+// to go when the chapter does. Same inversion as onAfterPageRender in
+// page-render.js: this module owns _clearChapterState and cannot import
+// llm-export.js without a cycle, so subscribers register here instead.
+export const _afterClearChapterStateHooks = [];
+export function onAfterClearChapterState(fn) { _afterClearChapterStateHooks.push(fn); }
 
 export function goBack() {
   setCancelled(true);

@@ -127,6 +127,13 @@ jobs:
             node --input-type=module --check < "$f"
           done
 
+      - name: LLM export format + reply parser tests (test_llm_export_format.mjs)
+        # The one JS unit test. It imports static/js/llm-export-format.js
+        # directly, which is why that module is kept free of imports: every
+        # other module reads localStorage or the DOM at import time and
+        # cannot load under Node at all.
+        run: node test_llm_export_format.mjs
+
       - name: Confirm index.html loads exactly one module entry point
         # The whole point of the module conversion is that load order lives in
         # main.js's imports, not in a list of <script> tags here. If someone

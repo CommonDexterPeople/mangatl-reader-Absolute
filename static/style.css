@@ -1870,6 +1870,100 @@ body {
 .flow-modal-footer .corr-btn-retrans,
 .flow-modal-footer .corr-btn-close { flex: 1 1 auto; min-width: 0; }
 
+/* ── 🤖 LLM Export (llm-export.js) ─────────────────────────────────────
+   The panel reuses .export-panel/.export-row/.export-row-btn from the
+   typeset export above; the review modal reuses .flow-modal-* from Check
+   Flow. Only what is specific to this feature is styled here. ────────── */
+.llmx-body {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem;
+  padding: 0.6rem 0.8rem 0.7rem;
+}
+@media (max-width: 760px) { .llmx-body { grid-template-columns: 1fr; } }
+.llmx-step { display: flex; flex-direction: column; gap: 0.45rem; min-width: 0; }
+.llmx-step-hdr {
+  display: flex; align-items: center; gap: 0.45rem;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.62rem; letter-spacing: 0.12em; color: var(--ui);
+}
+.llmx-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.25rem; height: 1.25rem; border-radius: 50%;
+  border: 1px solid var(--ui); font-size: 0.58rem;
+}
+.llmx-controls {
+  display: flex; flex-wrap: wrap; gap: 0.4rem 1rem;
+  font-family: 'Share Tech Mono', monospace; font-size: 0.58rem; color: var(--dim);
+}
+.llmx-controls label { display: flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+.llmx-controls input[type=checkbox] { accent-color: var(--ui); margin: 0; }
+.llmx-select {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 3px;
+  color: var(--text); font-family: 'Share Tech Mono', monospace; font-size: 0.6rem;
+  padding: 0.18rem 0.3rem;
+}
+.llmx-select:focus { outline: none; border-color: var(--ui); }
+.llmx-rows { border: 1px solid var(--border); border-radius: 4px; max-height: 170px; overflow-y: auto; }
+.llmx-row-meta { color: var(--mid); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.llmx-links {
+  font-family: 'Share Tech Mono', monospace; font-size: 0.58rem; line-height: 1.7; color: var(--dim);
+}
+.llmx-links a { color: var(--ui); text-decoration: none; border-bottom: 1px dotted var(--ui); }
+.llmx-reply {
+  width: 100%; min-height: 7rem; resize: vertical;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); font-family: 'Share Tech Mono', monospace; font-size: 0.66rem;
+  line-height: 1.5; padding: 0.45rem 0.55rem;
+}
+.llmx-reply:focus { outline: none; border-color: var(--ui); }
+.llmx-reply::placeholder { color: var(--dim); opacity: 0.7; }
+.llmx-import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.llmx-filebtn { position: relative; overflow: hidden; cursor: pointer; }
+.llmx-filebtn input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.llmx-primary { border-color: var(--ui); color: var(--ui); }
+.llmx-primary:hover:not(:disabled) { background: rgba(0,229,176,0.09); }
+
+/* Review modal */
+.llmx-modal { max-width: 46rem; border-color: var(--ui); }
+.llmx-modal .flow-modal-hdr { color: var(--ui); }
+.llmx-summary {
+  display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem;
+  font-family: 'Share Tech Mono', monospace; font-size: 0.6rem; color: var(--mid);
+}
+.llmx-summary b { color: var(--text); font-weight: 400; }
+.llmx-warn {
+  border: 1px solid var(--narr); color: var(--narr); border-radius: 4px;
+  padding: 0.4rem 0.6rem; font-size: 0.82rem; line-height: 1.5;
+}
+.llmx-note { font-family: 'Share Tech Mono', monospace; font-size: 0.58rem; color: var(--dim); line-height: 1.6; }
+.llmx-select-row { display: flex; gap: 0.4rem; }
+.llmx-row {
+  display: grid; grid-template-columns: auto 1fr; gap: 0.2rem 0.6rem; align-items: start;
+  border: 1px solid var(--border2); border-radius: 4px; padding: 0.5rem 0.65rem;
+  background: var(--bg3); cursor: pointer;
+}
+.llmx-row input[type=checkbox] { accent-color: var(--ui); margin-top: 0.25rem; }
+.llmx-row.flagged { border-color: var(--narr); }
+.llmx-row.gone { opacity: 0.5; cursor: default; }
+.llmx-row-main { min-width: 0; }
+.llmx-row-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
+  font-family: 'Share Tech Mono', monospace; font-size: 0.6rem; color: var(--dim);
+  margin-bottom: 0.2rem;
+}
+.llmx-id { color: var(--ui); }
+.llmx-chip {
+  border: 1px solid var(--narr); color: var(--narr); border-radius: 10px;
+  padding: 0 0.45rem; font-size: 0.54rem; line-height: 1.6;
+}
+.llmx-chip.danger { border-color: var(--danger); color: var(--danger); }
+.llmx-src { font-size: 0.8rem; color: var(--mid); font-style: italic; line-height: 1.45; }
+.llmx-diff { font-family: 'Crimson Pro', Georgia, serif; font-size: 0.88rem; line-height: 1.5; overflow-wrap: anywhere; }
+.llmx-old { color: var(--dim); text-decoration: line-through; margin-right: 0.45rem; }
+.llmx-new { color: var(--text); }
+.llmx-list { font-family: 'Share Tech Mono', monospace; font-size: 0.6rem; color: var(--dim); }
+.llmx-list summary { cursor: pointer; color: var(--mid); }
+.llmx-list code { display: block; margin-top: 0.3rem; color: var(--text); overflow-wrap: anywhere; line-height: 1.7; }
+
 /* ── Glossary modal (reuses .flow-modal-backdrop/.flow-modal/.flow-modal-hdr/
    .flow-modal-footer above — only the per-row layout is glossary-specific,
    since a term row is a horizontal 3-input strip rather than the Check

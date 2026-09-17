@@ -228,7 +228,24 @@ capped, no document-level coherence — that's inherent to this whole class
 of dedicated MT model, not something NLLB specifically had and these
 don't. The flow/coherence gap is what item 6 is for.
 
-## 6. Export-for-external-LLM translation — designed in full, not built
+## 6. Export-for-external-LLM translation — SHIPPED
+
+> **Status note (2026-09-18).** Built as designed below, as `static/js/llm-export.js`
+> (panel, review modal, apply) plus `static/js/llm-export-format.js` (the file
+> format and reply parser, kept import-free so `test_llm_export_format.mjs` can
+> run it under Node — the design said one file; the parser earned its own so it
+> could be tested). Two things the design below treats as given had to be made
+> true first: the pipeline now opens a chapter with **no key** in OCR-only mode
+> (regions stored with a `—` placeholder; `_validateApiKeyOrToast` confirms
+> instead of refusing), and local folder/CBZ loading — broken since the
+> per-chapter state clear started emptying the blob store — was fixed so the
+> key-free path has a source to read from. One addition beyond the design: an
+> export record (`mtl_llmx_<chapterId>`) that maps each exported ID to its
+> region *id*, so import still lands correctly after ✏ CORRECT has added or
+> deleted regions (B-numbers shift, region ids don't); a stale record shows as
+> "source edited since export" / "region no longer exists" flags in the review.
+> The rest of this section is the design of record and still describes what
+> shipped. v2 (page images alongside the text) remains unbuilt.
 
 Idea, as originally recorded: export a translated chapter as a file the user
 hands to their own free ChatGPT/Claude/Gemini/DeepSeek session for polish.
