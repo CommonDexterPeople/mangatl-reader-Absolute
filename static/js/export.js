@@ -16,7 +16,7 @@ import { openCorrection } from './correction-ui.js';
 import { imageRefBody } from './local-source.js';
 import { _pageStore } from './ocr-client.js';
 import { _activeChapterId } from './state-and-constants.js';
-import { esc, getAiInpaintSetting, toast } from './utils.js';
+import { esc, getAiInpaintSetting, scrollPanelBelowHeader, toast } from './utils.js';
 import { buildZip } from './zip-writer.js';
 
 /**
@@ -258,6 +258,11 @@ export async function exportTypesetChapter() {
   const panel = _exportPanelEl();
   if (panel) panel.classList.add('active');
   _renderExportPanel();
+  // The progress panel lives at the top of the reader; the button that
+  // starts the export is in the sticky header, clickable from page 40. Bring
+  // the panel into view, or the only visible sign of a running export is the
+  // toast at the end — see scrollPanelBelowHeader in utils.js.
+  scrollPanelBelowHeader(panel);
 
   // Sequential, one page at a time — this is the whole point: never hold
   // more than one inpaint job in flight, so a big chapter can't overwhelm

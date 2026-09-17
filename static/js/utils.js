@@ -124,6 +124,21 @@ export function toast(msg, dur = 6000) {
   setToastTimer(setTimeout(() => { t.style.display = 'none'; }, dur));
 }
 export function setStatus(msg) { document.getElementById('reader-status').textContent = msg; }
+
+// Scroll so `panel` sits just below the sticky reader header. The panels that
+// open from header buttons (⬇ Export Typeset, 🤖 LLM Export) live at the top
+// of the reader, but the buttons are reachable from anywhere in a long
+// chapter — opened from page 15, a panel landed thousands of pixels above
+// the viewport and the click looked like it did nothing: no toast, no error,
+// nothing in the console. Instant rather than smooth: page images are
+// usually still loading, and a long smooth scroll loses to scroll anchoring
+// as they expand (measured landing 3,500 px further DOWN a 23-page chapter).
+export function scrollPanelBelowHeader(panel) {
+  if (!panel) return;
+  const header = document.querySelector('.reader-header');
+  const top = panel.getBoundingClientRect().top + window.scrollY - (header?.offsetHeight || 0);
+  window.scrollTo({ top: Math.max(0, top), behavior: 'instant' });
+}
 export function setProgress(done, total) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   document.getElementById('progress-fill').style.width = pct + '%';

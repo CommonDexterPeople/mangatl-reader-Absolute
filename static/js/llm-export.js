@@ -66,7 +66,7 @@ import { _pageStore } from './ocr-client.js';
 import { onAfterPageRender, renderPage } from './page-render.js';
 import { _activeChapterId, _manualOrder, getLangName } from './state-and-constants.js';
 import { getTargetLang } from './translate-client.js';
-import { esc, onAfterClearChapterState, toast } from './utils.js';
+import { esc, onAfterClearChapterState, scrollPanelBelowHeader, toast } from './utils.js';
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
 const LLMX_MANIFEST_PREFIX = 'mtl_llmx_';
@@ -246,21 +246,9 @@ export function llmxToggle() {
   panel.classList.add('active');
   _llmxBuildPanel();
   _llmxRenderRows();
-  _llmxScrollPanelIntoView(panel);
-}
-
-/** The panel sits at the top of the reader, under the sticky header — but
- *  the button that opens it is IN that header, reachable from anywhere in a
- *  long chapter. Opened from page 15, the panel landed thousands of pixels
- *  above the viewport and the click looked like it did nothing: no toast,
- *  no error, nothing in the console. Scroll so the panel sits just below
- *  the header instead. Instant, not smooth: page images are often still
- *  loading, and a long smooth scroll loses to scroll anchoring as they
- *  expand — measured landing 3,500 px FURTHER down on a 23-page chapter. */
-function _llmxScrollPanelIntoView(panel) {
-  const header = document.querySelector('.reader-header');
-  const top = panel.getBoundingClientRect().top + window.scrollY - (header?.offsetHeight || 0);
-  window.scrollTo({ top: Math.max(0, top), behavior: 'instant' });
+  // Opened from deep in a chapter the panel would be off-screen — see
+  // scrollPanelBelowHeader in utils.js.
+  scrollPanelBelowHeader(panel);
 }
 
 /** The static half of the panel — controls, textarea, buttons. Built once
