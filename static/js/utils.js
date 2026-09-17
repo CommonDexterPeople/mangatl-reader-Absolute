@@ -162,10 +162,14 @@ export function esc(s) {
 // on an explicit return to the home screen, closes that gap entirely
 // rather than relying on the correction-draft signature check (see
 // _corrSourceSignature in correction-ui.js) to catch it after the fact.
-export function _clearChapterState() {
+//
+// `keepLocalRefs`: the local-folder/CBZ entry point registers the NEW
+// chapter's page blobs before it gets here, so it names them to survive the
+// blob-store clear — see clearLocalBlobStore() in local-source.js.
+export function _clearChapterState({ keepLocalRefs = [] } = {}) {
   _pageStore.clear();
   _manualOrder.clear();
-  clearLocalBlobStore();
+  clearLocalBlobStore(keepLocalRefs);
   Object.values(_corrOverlayCtl).forEach(ctl => ctl?.detach());
   Object.keys(_corrOverlayCtl).forEach(k => delete _corrOverlayCtl[k]);
   Object.keys(_corrWork).forEach(k => delete _corrWork[k]);

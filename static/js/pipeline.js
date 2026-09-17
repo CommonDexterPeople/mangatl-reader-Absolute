@@ -538,8 +538,11 @@ export async function startPipelineWithLocalSource(localChapter, targetLang) {
   setPrevChapterId(null);   // no prev/next chapter for a local source —
   setNextChapterId(null);   // updateNavButtons() below hides the nav bar
   // Release any leftover state from a PREVIOUS chapter — see
-  // _clearChapterState's docstring in utils.js.
-  _clearChapterState();
+  // _clearChapterState's docstring in utils.js — but keep THIS chapter's
+  // page blobs, which chapterFromFileList/chapterFromCbz registered in the
+  // local blob store just before calling here. Clearing them too is what
+  // made every local page fail with "no longer available".
+  _clearChapterState({ keepLocalRefs: localChapter.pages.map(p => p.cdn) });
 
   show('screen-reader');
   refreshCacheUI();

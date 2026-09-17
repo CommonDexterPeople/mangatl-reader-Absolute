@@ -60,8 +60,19 @@ export function isLocalRef(cdnRef) {
 // Frees every local page's Blob + object URL. Called from goBack() (utils.js)
 // alongside the rest of the per-chapter cleanup, and safe to call even when
 // nothing local was ever opened (both Maps are just empty then).
-export function clearLocalBlobStore() {
-  _localBlobStore.clear();
+//
+// `keepRefs` exists for one caller: startPipelineWithLocalSource (pipeline.js)
+// runs the per-chapter cleanup AFTER chapterFromFileList/chapterFromCbz has
+// already registered the new chapter's pages here. Clearing unconditionally
+// at that point threw away the very blobs about to be OCR'd, and every local
+// page failed with "no longer available". The new chapter's refs are kept;
+// anything else in the store belongs to a previous chapter and still goes.
+export function clearLocalBlobStore(keepRefs = []) {
+  if (!keepRefs.length) { _localBlobStore.clear(); return; }
+  const keep = new Set(keepRefs);
+  for (const ref of [..._localBlobStore.keys()]) {
+    if (!keep.has(ref)) _localBlobStore.delete(ref);
+  }
 }
 
 export function _blobToBase64(blob) {
