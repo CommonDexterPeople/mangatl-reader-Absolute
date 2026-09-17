@@ -158,6 +158,19 @@ def main():
 
         b64 = test_page_b64()
 
+        # 2b. The page itself arrives whole. The frontend is one ~600 KB
+        # response here, and a truncated one is a page whose script never
+        # parses — every button dead, nothing in the console. Nothing else in
+        # this file would notice: every other check talks to the JSON routes.
+        req = urllib.request.Request(BASE + "/")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            page = r.read()
+            declared = int(r.headers.get("Content-Length") or -1)
+        check("GET / arrives whole", declared == len(page), f"declared={declared} got={len(page)}")
+        check("GET / ends with </html>", page.rstrip().endswith(b"</html>"),
+              f"tail={page[-60:]!r}")
+        check("GET / carries the flattened frontend", b"llmxToggle" in page and b"startPipeline" in page)
+
         # 3. Real OCR through the real pipeline.
         st, body = post("/ocr", {"image_b64": b64, "lang": "en",
                                  "vision_mode": "off", "local_engine": "rapidocr"})

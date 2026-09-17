@@ -316,7 +316,21 @@ def build(output_path: Path) -> None:
         '    return send_from_directory(app.static_folder, "index.html")\n',
         '@app.route("/")\n'
         "def index():\n"
-        '    return Response(_HTML, content_type="text/html; charset=utf-8")\n',
+        "    # Streamed in 8 KB pieces — the buffer size send_file uses for the\n"
+        "    # on-disk frontend — rather than handed to Werkzeug as one ~600 KB\n"
+        "    # string. On at least one Windows machine (HTTP-scanning antivirus\n"
+        "    # installed), a single large write from a Python server is cut off\n"
+        "    # partway, at a multiple of 65 280 bytes, more often than not:\n"
+        "    # measured 3/8 complete for one 626 KB write against 8/8 for the same\n"
+        "    # bytes in 16 KB writes. A truncated page is a page whose script never\n"
+        "    # parses — every button dead, nothing in the console — and this route\n"
+        "    # is the one place the app sends a response that large.\n"
+        '    _body = _HTML.encode("utf-8")\n'
+        "    def _pieces(step=8192):\n"
+        "        for i in range(0, len(_body), step):\n"
+        "            yield _body[i:i + step]\n"
+        '    return Response(_pieces(), content_type="text/html; charset=utf-8",\n'
+        '                    headers={"Content-Length": str(len(_body))})\n',
         1,
     )
 
